@@ -1,0 +1,3 @@
+# Apertus v1.5 8B on the CSCS Inference API: smaller and faster than 70B
+backend: cscs
+name: swiss-ai/Apertus-v1.5-8B

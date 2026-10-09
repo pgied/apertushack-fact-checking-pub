@@ -1,0 +1,69 @@
+# Configuration for `uv run python -m src`, composed by Hydra. Override anything on the command line:
+#
+#     uv run python -m src stage=prepare                       # download the dataset
+#     uv run python -m src limit=30                            # predict 30 cases with the default model and strategy
+#     uv run python -m src model=apertus-8b-local limit=30     # the same with a local Ollama model
+#     uv run python -m src task=advanced model=apertus-70b     # the advanced task: the claims against the booklet PDFs
+#     uv run python -m src strategy=baseline strategy.max_tokens=20   # a strategy, with one of its settings changed
+#
+# API keys never go here: they belong in .env (see .env.example).
+
+defaults:
+  - model: apertus-8b-local          # one of the files in conf/model/
+  # A file or folder in src/strategies/. Its settings, strategy.temperature, strategy.max_tokens and
+  # its own ones, are in its code.
+  - strategy: baseline
+  - override hydra/job_logging: disabled
+  - override hydra/hydra_logging: disabled
+  - _self_
+
+stage: predict                  # prepare, predict, evaluate or models
+task: beginner                  # beginner (claim and reference text) or advanced (claim and booklet PDF)
+limit: null                     # predict only this many cases, spread evenly over the dataset; null = all
+
+data_dirs:                      # each task's cases.jsonl and gold.jsonl, written by stage=prepare
+  beginner: data/beginner
+  advanced: data/advanced       # plus the booklet PDFs in booklets/
+runs_dir: data/runs
+# Every predict run gets its own folder with its config, predictions and scores. Pass an existing
+# folder to continue an interrupted run, or to score it with stage=evaluate.
+run_dir: ${runs_dir}/${now:%Y-%m-%d_%H-%M-%S}_${task}_${strategy.name}_${hydra:runtime.choices.model}
+
+# Where the models are served. Each file in conf/model/ says which backend it uses.
+backends:
+  # The CSCS Inference API by default. The endpoint and its key come from BASE_URL and API_KEY, the
+  # names the challenge uses: at the evaluation they point to the organisers' token-counting proxy.
+  # The project template's LLM_BASE_URL and LLM_API_KEY work too. The environment wins over .env.
+  cscs:
+    url: ${oc.env:BASE_URL,${oc.env:LLM_BASE_URL,'https://api.inference.cscs.ch/v1'}}
+    api_key_env: [API_KEY, LLM_API_KEY]   # the first one that is set
+    workers: 8                  # requests in parallel
+    options: {}                 # extra request fields
+  ollama:
+    url: http://localhost:11434/v1
+    api_key_env: null           # Ollama needs no key
+    workers: 1                  # Ollama answers one request at a time unless OLLAMA_NUM_PARALLEL is raised
+    options:
+      reasoning_effort: none    # thinking models would spend the 10 answer tokens on thinking
+
+# Hydra only composes the configuration here: it creates no folders or log files of its own.
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+  sweep:
+    dir: .
+    subdir: .
+  help:
+    app_name: python -m src
+    header: |
+      Decide claims about Swiss votes with a strategy and Apertus, and score the predictions.
+
+        uv run python -m src stage=prepare                         the dataset into data/beginner/ and data/advanced/
+        uv run python -m src limit=30                              predict 30 cases with the default model and strategy
+        uv run python -m src model=apertus-8b-local limit=30       the same with a local Ollama model
+        uv run python -m src task=advanced model=apertus-70b       the advanced task: the claims against the booklet PDFs
+        uv run python -m src strategy=<name> strategy.<setting>=x  another strategy from src/strategies/, one setting changed
+        uv run python -m src stage=evaluate                        score the latest run again
+        uv run python -m src stage=models model=apertus-8b-local   list the models of that backend
+    footer: "The challenge's CLI, which the Docker image runs: python -m src.entrypoint --help"

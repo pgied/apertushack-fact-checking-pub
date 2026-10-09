@@ -1,0 +1,4 @@
+# Apertus 8B Instruct (v1, 2509) in 4 bits on a local Ollama server, about 5 GB.
+# Download it first: ollama pull hf.co/unsloth/Apertus-8B-Instruct-2509-GGUF:Q4_K_M
+backend: ollama
+name: hf.co/unsloth/Apertus-8B-Instruct-2509-GGUF:Q4_K_M

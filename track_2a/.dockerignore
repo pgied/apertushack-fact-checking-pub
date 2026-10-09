@@ -1,0 +1,12 @@
+# The image only gets pyproject.toml, uv.lock, conf/ and src/ (see the Dockerfile). Leaving out the
+# rest keeps the build context small, and keys and data out of the image.
+.venv/
+.env
+.env.*
+data/
+output/
+docs/
+tests/
+slurm/
+**/__pycache__/
+.pytest_cache/

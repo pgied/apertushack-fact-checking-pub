@@ -1,0 +1,3 @@
+# Apertus v1.5 70B on the CSCS Inference API (the default)
+backend: cscs
+name: swiss-ai/Apertus-v1.5-70B

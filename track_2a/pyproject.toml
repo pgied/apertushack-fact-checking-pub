@@ -1,0 +1,38 @@
+[project]
+name = "apertushack-fact-checking"
+version = "0.1.0"
+description = "ApertusHack: check claims about Swiss popular votes against the voting booklets with Apertus"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "hydra-core>=1.3",
+    "openai>=1.50",
+    "pypdfium2>=4.30",  # reads the voting booklets
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+# PyTorch, for local models and src/device.py. Installed by default, but not in the Docker image
+# (uv sync --no-default-groups): that runs on the CPU, and torch would add gigabytes of CUDA libraries.
+torch = [
+    "numpy>=2",  # torch warns at every import without it
+    "torch>=2.9",  # 2.9 is what the CSCS uenv pytorch/v2.9.1:v2 brings
+]
+
+[tool.uv]
+default-groups = ["dev", "torch"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+# PyTorch from PyPI uses the GPU on macOS (MPS) and Linux (CUDA 13), but on Windows it is CPU-only:
+# there the CUDA 13 build comes from PyTorch's own index. It needs an NVIDIA driver 580 or newer.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'win32'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true  # only for torch, everything else still comes from PyPI

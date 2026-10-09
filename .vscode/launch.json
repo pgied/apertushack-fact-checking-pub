@@ -1,0 +1,106 @@
+{
+    // Run and debug `python -m src ...` from VS Code: open the Run and Debug view, pick one, press F5.
+    // They run in track_2a/, the project root, with its uv environment (track_2a/.venv, created by
+    // `uv sync` there), the config in track_2a/conf/ and the key in track_2a/.env.
+    // The arguments are Hydra overrides; every predict run gets a new folder in data/runs/.
+    // The venv's Python is in .venv/bin on macOS and Linux, in .venv\Scripts on Windows. On a Mac,
+    // PYTORCH_ENABLE_MPS_FALLBACK runs the few operations that MPS lacks on the CPU instead of failing.
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "prepare: download the dataset",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "src",
+            "args": ["stage=prepare"],
+            "cwd": "${workspaceFolder}/track_2a",
+            "python": "${workspaceFolder}/track_2a/.venv/bin/python",
+            "windows": { "python": "${workspaceFolder}/track_2a/.venv/Scripts/python.exe" },
+            "osx": { "env": { "PYTORCH_ENABLE_MPS_FALLBACK": "1" } },
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "predict: 10 cases, local Ollama",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "src",
+            "args": ["model=apertus-8b-local", "limit=10"],
+            "cwd": "${workspaceFolder}/track_2a",
+            "python": "${workspaceFolder}/track_2a/.venv/bin/python",
+            "windows": { "python": "${workspaceFolder}/track_2a/.venv/Scripts/python.exe" },
+            "osx": { "env": { "PYTORCH_ENABLE_MPS_FALLBACK": "1" } },
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "predict: 10 cases, CSCS",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "src",
+            "args": ["model=apertus-70b", "limit=10"],
+            "cwd": "${workspaceFolder}/track_2a",
+            "python": "${workspaceFolder}/track_2a/.venv/bin/python",
+            "windows": { "python": "${workspaceFolder}/track_2a/.venv/Scripts/python.exe" },
+            "osx": { "env": { "PYTORCH_ENABLE_MPS_FALLBACK": "1" } },
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "predict advanced: 10 cases, CSCS",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "src",
+            "args": ["task=advanced", "model=apertus-70b", "limit=10"],
+            "cwd": "${workspaceFolder}/track_2a",
+            "python": "${workspaceFolder}/track_2a/.venv/bin/python",
+            "windows": { "python": "${workspaceFolder}/track_2a/.venv/Scripts/python.exe" },
+            "osx": { "env": { "PYTORCH_ENABLE_MPS_FALLBACK": "1" } },
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "entrypoint: the sample cases, CSCS",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "src.entrypoint",
+            "args": ["--input", "data/examples/cases.jsonl", "--output", "output/predictions.jsonl"],
+            "cwd": "${workspaceFolder}/track_2a",
+            "python": "${workspaceFolder}/track_2a/.venv/bin/python",
+            "windows": { "python": "${workspaceFolder}/track_2a/.venv/Scripts/python.exe" },
+            "osx": { "env": { "PYTORCH_ENABLE_MPS_FALLBACK": "1" } },
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "evaluate: the latest run",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "src",
+            "args": ["stage=evaluate"],
+            "cwd": "${workspaceFolder}/track_2a",
+            "python": "${workspaceFolder}/track_2a/.venv/bin/python",
+            "windows": { "python": "${workspaceFolder}/track_2a/.venv/Scripts/python.exe" },
+            "osx": { "env": { "PYTORCH_ENABLE_MPS_FALLBACK": "1" } },
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "torch: show the GPU",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "src.device",
+            "cwd": "${workspaceFolder}/track_2a",
+            "python": "${workspaceFolder}/track_2a/.venv/bin/python",
+            "windows": { "python": "${workspaceFolder}/track_2a/.venv/Scripts/python.exe" },
+            "osx": { "env": { "PYTORCH_ENABLE_MPS_FALLBACK": "1" } },
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "tests",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["-q"],
+            "cwd": "${workspaceFolder}/track_2a",
+            "python": "${workspaceFolder}/track_2a/.venv/bin/python",
+            "windows": { "python": "${workspaceFolder}/track_2a/.venv/Scripts/python.exe" },
+            "osx": { "env": { "PYTORCH_ENABLE_MPS_FALLBACK": "1" } },
+            "console": "integratedTerminal"
+        }
+    ]
+}
