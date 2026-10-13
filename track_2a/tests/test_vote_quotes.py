@@ -4,7 +4,7 @@ import json
 import pytest
 
 from src.evaluate import evidence_found
-from src.strategies import LLM
+from src.llm import LLM
 from src.strategies._booklet import find_quote, vote_pages
 from src.strategies.vote_quotes import VoteQuotes, parse_answer
 from tests.test_strategies import Client
