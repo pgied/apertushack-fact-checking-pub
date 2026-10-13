@@ -5,9 +5,10 @@ import re
 from dataclasses import dataclass
 
 from src.nli import LABELS, parse_label
-from src.strategies import LLM, Strategy, Verdict
+from src.llm import LLM
+from src.strategy import Strategy, Verdict
+from src.strategies.baseline.strategy import Baseline, read_label
 from src.strategies._booklet import also_on, find_quote, vote_pages
-from src.strategies.baseline import Baseline, read_label
 
 NEUTRAL = LABELS.index("neutral")
 
