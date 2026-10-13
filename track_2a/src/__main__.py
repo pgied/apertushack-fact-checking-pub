@@ -21,8 +21,11 @@ from pathlib import Path
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
-from src import dataset, evaluate, strategies
+from src import dataset, evaluate
 from src.backend import load_dotenv, make_client
+from src.catalog import Catalog
+from src.llm import LLM
+from src.strategy import TASKS
 
 ROOT = Path(__file__).resolve().parent.parent  # relative paths in the config start here
 
@@ -53,9 +56,9 @@ def prepare(cfg: DictConfig) -> None:
 
 
 def predict(cfg: DictConfig) -> None:
-    if cfg.task not in strategies.TASKS:
-        raise SystemExit(f"Unknown task {cfg.task!r}, use one of: {', '.join(strategies.TASKS)}")
-    strategy_class = strategies.load(cfg.strategy.name)
+    if cfg.task not in TASKS:
+        raise SystemExit(f"Unknown task {cfg.task!r}, use one of: {', '.join(TASKS)}")
+    strategy_class = Catalog().load(cfg.strategy.name)
     if cfg.task not in strategy_class.tasks:
         raise SystemExit(f"The strategy {cfg.strategy.name} does not do the {cfg.task} task, "
                          f"only: {', '.join(strategy_class.tasks)}")
@@ -87,17 +90,17 @@ def predict(cfg: DictConfig) -> None:
     request = {"temperature": settings.temperature, "max_tokens": settings.max_tokens,
                **OmegaConf.to_container(backend.options)}
 
-    def llm() -> strategies.LLM:  # every case gets its own, to count its tokens
-        return strategies.LLM(client, cfg.model.name, request)
+    def llm() -> LLM:  # every case gets its own, to count its tokens
+        return LLM(client, cfg.model.name, request)
 
     # Once per run, for all its cases: read the booklets and set up the strategy, measured apart from the cases
-    strategy, setup = strategies.start(strategy_class, settings, cfg.task, cases, cases_file.parent, llm())
+    strategy, setup = strategy_class.start(settings, cfg.task, cases, cases_file.parent, llm())
     (run / "setup.json").write_text(json.dumps(setup) + "\n")
     print(f"Set up in {setup['setup_time_ms']:,} ms, {setup['booklets']} booklets read")
 
     failed = 0
     with open(predictions, "a", encoding="utf-8") as out, ThreadPoolExecutor(backend.workers) as pool:
-        futures = {pool.submit(strategies.answer, strategy, case, llm()): case["id"] for case in todo}
+        futures = {pool.submit(strategy.answer, case, llm()): case["id"] for case in todo}
         for n, future in enumerate(as_completed(futures), 1):
             try:
                 prediction = future.result()
@@ -150,5 +153,5 @@ def list_models(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     load_dotenv(ROOT / ".env")
-    strategies.register()  # before main(), which composes the configuration: strategy=<name> needs them
+    Catalog().register()  # before main(), which composes the configuration: strategy=<name> needs them
     main()

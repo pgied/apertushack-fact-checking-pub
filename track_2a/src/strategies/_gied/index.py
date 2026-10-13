@@ -88,21 +88,26 @@ class Booklet:
         return best
 
     def map(self, other: "Booklet", i: int) -> int | None:
-        """The sentence here at the place of sentence i of the other edition: the same page and block, and
-        the same share of the way through the block; or through the page, if the blocks do not match."""
+        """The sentence here at the place of sentence i of the other edition: on the same page, in the same
+        block, the same share of the way through it. If the page's blocks differ between the editions, the
+        same share of the way through the page."""
         sentence = other.sentences[i]
-        here = self.at.get((sentence.page, sentence.block))
-        there = other.at[sentence.page, sentence.block]
-        if not here or len(self.blocks(sentence.page)) != len(other.blocks(sentence.page)):
-            here = [j for j in range(len(self.sentences)) if self.sentences[j].page == sentence.page]
-            there = [j for j in range(len(other.sentences)) if other.sentences[j].page == sentence.page]
+        if self.blocks(sentence.page) == other.blocks(sentence.page):
+            here, there = self.at[sentence.page, sentence.block], other.at[sentence.page, sentence.block]
+        else:
+            here, there = self.on_page(sentence.page), other.on_page(sentence.page)
         if not here:
             return None
-        share = (there.index(i) + 0.5) / len(there)
+        share = (there.index(i) + 0.5) / len(there)  # how far through its block or page sentence i is
         return here[min(len(here) - 1, int(share * len(here)))]
 
     def blocks(self, page: int) -> list[int]:
+        """The numbers of the page's text blocks."""
         return sorted({block for (p, block) in self.at if p == page})
+
+    def on_page(self, page: int) -> list[int]:
+        """The page's sentences, in order."""
+        return [j for j, sentence in enumerate(self.sentences) if sentence.page == page]
 
 
 class BM25:

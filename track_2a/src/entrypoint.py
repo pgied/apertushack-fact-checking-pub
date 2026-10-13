@@ -24,9 +24,12 @@ from pathlib import Path
 from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig, OmegaConf
 
-from src import dataset, strategies
+from src import dataset
 from src.backend import load_dotenv, make_client
+from src.catalog import Catalog
+from src.llm import LLM
 from src.nli import LABELS
+from src.strategy import Strategy
 
 ROOT = Path(__file__).resolve().parent.parent  # relative paths in the config start here
 
@@ -46,14 +49,15 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("--input and --output must be different files")
 
     load_dotenv(ROOT / ".env")
-    strategies.register()
+    catalog = Catalog()
+    catalog.register()
     cfg = configure(args.overrides)
     cases = dataset.read_jsonl(args.input)
     by_task: dict[str, list[dict]] = {}
     for case in cases:
         by_task.setdefault(task_of(case), []).append(case)
 
-    strategy_class = strategies.load(cfg.strategy.name)
+    strategy_class = catalog.load(cfg.strategy.name)
     if missing := sorted(set(by_task) - set(strategy_class.tasks)):
         raise SystemExit(f"The strategy {cfg.strategy.name} does not do the {' and '.join(missing)} task")
     backend = cfg.backends[cfg.model.backend]
@@ -62,16 +66,15 @@ def main(argv: list[str] | None = None) -> None:
     request = {"temperature": settings.temperature, "max_tokens": settings.max_tokens,
                **OmegaConf.to_container(backend.options)}
 
-    def llm() -> strategies.LLM:  # every case gets its own, to count its tokens
-        return strategies.LLM(client, cfg.model.name, request)
+    def llm() -> LLM:  # every case gets its own, to count its tokens
+        return LLM(client, cfg.model.name, request)
 
     # Once per task, for all its cases: read the booklets and set up the strategy. If that fails, the
     # task's cases are answered neutral, and the other task still runs.
     started = {}
     for task, task_cases in by_task.items():
         try:
-            started[task], setup = strategies.start(strategy_class, settings, task, task_cases,
-                                                    args.input.parent, llm())
+            started[task], setup = strategy_class.start(settings, task, task_cases, args.input.parent, llm())
             print(f"{task}: {len(task_cases)} cases, set up in {setup['setup_time_ms']:,} ms, "
                   f"{setup['booklets']} booklets read", file=sys.stderr)
         except Exception as error:
@@ -106,14 +109,14 @@ def task_of(case: dict) -> str:
     return "advanced" if "booklet" in case else "beginner"
 
 
-def decide(strategy: strategies.Strategy | None, case: dict, llm: strategies.LLM) -> tuple[dict, bool]:
+def decide(strategy: Strategy | None, case: dict, llm: LLM) -> tuple[dict, bool]:
     """The prediction for the case, and whether it worked. Without a strategy, or if it fails, the
     answer is neutral without evidence."""
     begin = time.perf_counter()
     try:
         if strategy is None:
             raise RuntimeError("the strategy could not be set up for this task")
-        return strategies.answer(strategy, case, llm), True
+        return strategy.answer(case, llm), True
     except Exception as error:
         print(f"  {case['id']} failed, answered neutral: {error!r}", file=sys.stderr)
         return {

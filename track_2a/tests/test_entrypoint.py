@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src import backend, entrypoint, strategies
+from src import backend, entrypoint, pdf
 
 # The advanced and the beginner case of the same dataset row, in one file
 BOOKLET = ["Votation populaire du 1er juin 2031", "2 Le Conseil fédéral recommande de rejeter l'initiative."]
@@ -59,7 +59,7 @@ def run(tmp_path, monkeypatch, client: Client, cases: list[dict] = CASES, pages=
     cases_file.write_text("".join(json.dumps(case, ensure_ascii=False) + "\n" for case in cases), encoding="utf-8")
     output = tmp_path / "output" / "predictions.jsonl"
     monkeypatch.setattr(entrypoint, "make_client", lambda backend: client)
-    monkeypatch.setattr(strategies.pdf, "pages", pages)
+    monkeypatch.setattr(pdf, "pages", pages)
 
     entrypoint.main(["--input", str(cases_file), "--output", str(output)])
 

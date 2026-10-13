@@ -8,8 +8,11 @@ from hydra import compose, initialize_config_dir
 from hydra.errors import ConfigCompositionException, MissingConfigException
 from omegaconf import OmegaConf
 
-from src import nli, strategies
+from src import nli, pdf
 from src.__main__ import run_settings
+from src.catalog import Catalog
+from src.llm import LLM
+from src.strategy import TASKS, Strategy, Verdict
 
 CONF = Path(__file__).resolve().parent.parent / "conf"
 CASE = {
@@ -34,24 +37,24 @@ class Client:
         return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage)
 
 
-class AskTwice(strategies.Strategy):
+class AskTwice(Strategy):
     """Asks the model twice, the second time with more tokens, and goes by the second answer."""
 
     tasks = ("beginner",)
 
     def predict(self, case, llm):
         llm.chat([{"role": "user", "content": "first"}])
-        return strategies.Verdict(nli.parse_label(llm.chat([{"role": "user", "content": "second"}], max_tokens=50)))
+        return Verdict(nli.parse_label(llm.chat([{"role": "user", "content": "second"}], max_tokens=50)))
 
 
-class NoSuchLabel(strategies.Strategy):
+class NoSuchLabel(Strategy):
     tasks = ("beginner",)
 
     def predict(self, case, llm):
-        return strategies.Verdict(3)
+        return Verdict(3)
 
 
-class Indexed(strategies.Strategy):
+class Indexed(Strategy):
     """Asks the model once in setup(), and counts the pages of the booklets there."""
 
     tasks = ("advanced",)
@@ -67,15 +70,17 @@ def compose_config(*overrides: str):
 
 
 def test_every_strategy_loads_and_says_which_tasks_it_does():
-    assert "baseline" in strategies.names()
-    for name in strategies.names():
-        strategy = strategies.load(name)
-        assert strategy.tasks and set(strategy.tasks) <= set(strategies.TASKS), name
+    catalog = Catalog()
+    assert "baseline" in catalog.names()
+    for name in catalog.names():
+        strategy = catalog.load(name)
+        assert strategy.tasks and set(strategy.tasks) <= set(TASKS), name
 
 
 def test_every_strategy_composes_with_its_settings_for_each_of_its_tasks():
-    for name in strategies.names():
-        strategy = strategies.load(name)
+    catalog = Catalog()
+    for name in catalog.names():
+        strategy = catalog.load(name)
         for task in strategy.tasks:
             cfg = compose_config(f"strategy={name}", f"task={task}")
             settings = OmegaConf.to_object(cfg.strategy)
@@ -104,7 +109,7 @@ def test_a_run_is_continued_only_with_the_same_task_model_strategy_and_limit():
 def test_a_prediction_counts_all_requests_of_its_case():
     client = Client("entailment")
     strategy = AskTwice(AskTwice.Settings(name="ask_twice"), "beginner", {})
-    prediction = strategies.answer(strategy, CASE, strategies.LLM(client, "some-model", {"max_tokens": 10}))
+    prediction = strategy.answer(CASE, LLM(client, "some-model", {"max_tokens": 10}))
 
     assert prediction["label_name"] == "entailment"
     assert prediction["metrics"]["input_tokens"] == 200
@@ -116,7 +121,7 @@ def test_a_prediction_counts_all_requests_of_its_case():
 def test_a_label_that_does_not_exist_is_refused():
     strategy = NoSuchLabel(NoSuchLabel.Settings(name="no_such_label"), "beginner", {})
     with pytest.raises(ValueError):
-        strategies.answer(strategy, CASE, strategies.LLM(Client(), "some-model", {}))
+        strategy.answer(CASE, LLM(Client(), "some-model", {}))
 
 
 def test_start_reads_each_booklet_once_and_measures_the_setup(monkeypatch, tmp_path):
@@ -126,11 +131,11 @@ def test_start_reads_each_booklet_once_and_measures_the_setup(monkeypatch, tmp_p
         read.append(path)
         return [f"the text of {path.name}"]
 
-    monkeypatch.setattr(strategies.pdf, "pages", pages)
+    monkeypatch.setattr(pdf, "pages", pages)
     cases = [{"id": f"case-{i}", "booklet": {"path": f"booklets/{name}.pdf"}} for i, name in enumerate("aba")]
 
-    strategy, setup = strategies.start(Indexed, Indexed.Settings(name="indexed"), "advanced", cases, tmp_path,
-                                       strategies.LLM(Client(), "some-model", {}))
+    strategy, setup = Indexed.start(Indexed.Settings(name="indexed"), "advanced", cases, tmp_path,
+                                    LLM(Client(), "some-model", {}))
 
     assert read == [tmp_path / "booklets/a.pdf", tmp_path / "booklets/b.pdf"]  # relative to the cases' folder
     assert strategy.pages(cases[2]) == ["the text of a.pdf"]
@@ -141,7 +146,7 @@ def test_start_reads_each_booklet_once_and_measures_the_setup(monkeypatch, tmp_p
 
 
 def test_the_beginner_task_reads_no_booklets(monkeypatch, tmp_path):
-    monkeypatch.setattr(strategies.pdf, "pages", lambda path: pytest.fail("no booklet to read"))
-    strategy, setup = strategies.start(AskTwice, AskTwice.Settings(name="ask_twice"), "beginner", [CASE], tmp_path,
-                                       strategies.LLM(Client(), "some-model", {}))
+    monkeypatch.setattr(pdf, "pages", lambda path: pytest.fail("no booklet to read"))
+    strategy, setup = AskTwice.start(AskTwice.Settings(name="ask_twice"), "beginner", [CASE], tmp_path,
+                                     LLM(Client(), "some-model", {}))
     assert strategy.booklets == {} and setup["booklets"] == 0

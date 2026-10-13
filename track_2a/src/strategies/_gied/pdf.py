@@ -26,6 +26,7 @@ import pypdfium2.raw as raw
 
 READERS = ("pdfium", "tags", "docling")
 LOCK = threading.Lock()
+HEADER_CHARS, HEADER_PAGES = 100, 3  # a running header is a short line that repeats on several pages
 
 # Structure elements that hold one block of text, and what kind of block it is
 BLOCKS = {"P": "text", "LI": "text", "LBody": "text", "BlockQuote": "text", "Caption": "text", "TR": "text",
@@ -74,25 +75,35 @@ def text_layer(path: Path) -> list[list[Block]]:
             texts = [page.get_textpage().get_text_range() for page in pdf]
         finally:
             pdf.close()
-    pages = [[plain(line) for line in text.split("\r\n")] for text in texts]
-    pages = [[line for line in lines if line and not line.isdigit()] for lines in pages]
-    shape = lambda line: re.sub(r"\d+", "#", line).strip()  # noqa: E731
-    seen = Counter(key for lines in pages for key in {shape(line) for line in lines if len(line) < 100})
-    booklet = []
-    for lines in pages:
-        blocks, text = [], []
-        for line in lines:
-            if len(line) < 100 and seen[shape(line)] >= 3:
-                if text:
-                    blocks.append(Block("text", " ".join(text)))
-                    text = []
-                blocks.append(Block("heading", shape(line).lstrip("# ").strip(), 2))
-            else:
-                text.append(line)
-        if text:
-            blocks.append(Block("text", " ".join(text)))
-        booklet.append([Block(b.kind, plain(b.text), b.level) for b in blocks if plain(b.text)])
-    return booklet
+    pages = [[line for line in map(plain, text.split("\r\n")) if line and not line.isdigit()] for text in texts]
+    headers = Counter(header for lines in pages for header in {header_of(line) for line in lines if is_short(line)})
+    repeated = {header for header, count in headers.items() if count >= HEADER_PAGES}
+    return [page_blocks(lines, repeated) for lines in pages]
+
+
+def is_short(line: str) -> bool:
+    return len(line) < HEADER_CHARS
+
+
+def header_of(line: str) -> str:
+    """A line with its numbers replaced, so that the running headers of pages 8 and 9 are the same."""
+    return re.sub(r"\d+", "#", line).strip()
+
+
+def page_blocks(lines: list[str], repeated: set[str]) -> list[Block]:
+    """A page's lines as blocks: each running header a heading, the lines between them one text block."""
+    blocks, text = [], []
+    for line in lines:
+        if is_short(line) and header_of(line) in repeated:
+            if text:
+                blocks.append(Block("text", " ".join(text)))
+                text = []
+            blocks.append(Block("heading", header_of(line).lstrip("# ").strip(), 2))
+        else:
+            text.append(line)
+    if text:
+        blocks.append(Block("text", " ".join(text)))
+    return [block for block in blocks if block.text]
 
 
 def tags(path: Path) -> list[list[Block]] | None:

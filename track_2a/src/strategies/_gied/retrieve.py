@@ -20,8 +20,9 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.llm import LLM
 from src.nli import LABELS
-from src.strategies import LLM, Verdict
+from src.strategy import Verdict
 from src.strategies._gied import timing
 from src.strategies._gied.index import MIN_CHARS, Booklet, Lazy, terms
 from src.strategies._gied.pdf import Block, read
@@ -149,19 +150,24 @@ class Retrieve(Baseline):
     def evidence(self, booklet: Booklet, hits: list[int], excerpts: list[list[int]], cited: list[int],
                  vote: str) -> list[dict]:
         """Up to `evidence` sentences, verbatim with their page: the hits in the excerpts that the answer
-        cites first, then the other hits, then the rest of the cited excerpts. Never the vote's title,
-        which every reference starts with."""
-        order = [i for n in cited for i in hits if i in excerpts[n]] + hits + [i for n in cited for i in excerpts[n]]
+        cites first, then the other hits, then the rest of the cited excerpts."""
+        cited_hits = [i for n in cited for i in hits if i in excerpts[n]]
+        cited_rest = [i for n in cited for i in excerpts[n]]
         title = set(terms(vote))
         items, seen = [], set()
-        for i in order:
+        for i in cited_hits + hits + cited_rest:
             sentence = booklet.sentences[i]
-            words = terms(sentence.text)
-            if (sentence.text in seen or len(sentence.text) < MIN_CHARS  # a fragment, such as a lone footnote
-                    or sum(w in title for w in words) >= 0.8 * len(words)):
+            if sentence.text in seen or not quotable(sentence.text, title):
                 continue
             seen.add(sentence.text)
             items.append({"page": sentence.page, "text": sentence.text[:MAX_QUOTE]})
             if len(items) == self.settings.evidence:
                 break
         return items
+
+
+def quotable(text: str, title: set[str]) -> bool:
+    """Whether a sentence can be evidence: not a fragment, such as a lone footnote, and not the vote's
+    title, which every gold passage starts with."""
+    words = terms(text)
+    return len(text) >= MIN_CHARS and sum(word in title for word in words) < 0.8 * len(words)

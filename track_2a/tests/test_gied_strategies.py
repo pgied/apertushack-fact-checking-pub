@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from src import dataset, strategies
+from src import dataset, pdf
+from src.llm import LLM
 from src.strategies.gied_docling.strategy import GiedDocling
 from src.strategies.gied_pdfium.strategy import GiedPdfium
 from src.strategies.gied_tags.strategy import GiedTags
@@ -38,13 +39,13 @@ def decide(cls, case: dict, answer: str, **settings) -> tuple[dict, Client]:
     client = Client(answer)
     task = "advanced" if "booklet" in case else "beginner"
     strategy = cls(cls.Settings(name="gied", **settings), task, {}, cases_dir=EXAMPLES)
-    return strategies.answer(strategy, case, strategies.LLM(client, "some-model", {"max_tokens": 12})), client
+    return strategy.answer(case, LLM(client, "some-model", {"max_tokens": 12})), client
 
 
 @pytest.mark.parametrize("cls", [GiedTags, GiedPdfium, GiedDocling])
 def test_the_evidence_is_five_sentences_of_the_booklet_with_their_pages(cls):
     prediction, client = decide(cls, ADVANCED, "contradiction 1")
-    booklet = " ".join(" ".join(page.split()) for page in strategies.pdf.pages(EXAMPLES / ADVANCED["booklet"]["path"]))
+    booklet = " ".join(" ".join(page.split()) for page in pdf.pages(EXAMPLES / ADVANCED["booklet"]["path"]))
 
     assert prediction["label_name"] == "contradiction"
     assert 1 <= len(prediction["evidence"]) <= 5
@@ -76,7 +77,7 @@ def test_a_cross_lingual_claim_is_searched_in_the_edition_in_its_language(tmp_pa
             (EXAMPLES / "booklets" / "2020_11_29_fr.pdf").read_bytes())
     client = Client("entailment 1")
     strategy = GiedTags(GiedTags.Settings(name="gied_tags"), "advanced", {}, cases_dir=tmp_path)
-    prediction = strategies.answer(strategy, SUMMARY, strategies.LLM(client, "some-model", {}))
+    prediction = strategy.answer(SUMMARY, LLM(client, "some-model", {}))
 
     assert len(client.requests) == 1  # no translation needed
     assert prediction["evidence"] and all(item["page"] for item in prediction["evidence"])
@@ -95,7 +96,7 @@ def test_the_cases_are_decided_alike_in_any_order():
     cases = [ADVANCED, SUMMARY]
 
     def run(order):
-        return {case["id"]: strategies.answer(strategy, case, strategies.LLM(client, "m", {}))["evidence"]
+        return {case["id"]: strategy.answer(case, LLM(client, "m", {}))["evidence"]
                 for case in order}
 
     assert run(cases) == run(cases[::-1])
@@ -110,7 +111,7 @@ def test_the_beginner_task_is_the_baselines():
 
 def test_without_a_folder_the_pages_that_start_read_are_used():
     path = ADVANCED["booklet"]["path"]
-    pages = strategies.pdf.pages(EXAMPLES / path)
+    pages = pdf.pages(EXAMPLES / path)
     strategy = GiedTags(GiedTags.Settings(name="gied_tags", translate=False), "advanced", {path: pages})
-    prediction = strategies.answer(strategy, ADVANCED, strategies.LLM(Client("contradiction 1"), "m", {}))
+    prediction = strategy.answer(ADVANCED, LLM(Client("contradiction 1"), "m", {}))
     assert prediction["evidence"] and all(1 <= item["page"] <= len(pages) for item in prediction["evidence"])

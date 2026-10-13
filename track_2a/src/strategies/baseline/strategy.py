@@ -13,8 +13,9 @@ run it with strategy=<name>.
 import re
 import sys
 
+from src.llm import LLM
 from src.nli import LABELS, parse_label
-from src.strategies import LLM, Strategy, Verdict
+from src.strategy import Strategy, Verdict
 
 NEUTRAL = LABELS.index("neutral")
 

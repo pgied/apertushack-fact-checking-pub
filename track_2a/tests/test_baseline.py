@@ -7,9 +7,10 @@ from types import SimpleNamespace
 import torch
 from hydra import compose, initialize_config_dir
 
-from src import device, nli, strategies
+from src import device, nli
 from src.backend import load_dotenv
 from src.evaluate import macro_f1
+from src.llm import LLM
 from src.strategies.baseline.strategy import Baseline
 
 CONF = Path(__file__).resolve().parent.parent / "conf"
@@ -52,7 +53,7 @@ def decide(answer: str, case: dict = CASE, task: str = "beginner", request: dict
     """Decide the case with the baseline, the model giving `answer`; returns the prediction and the client."""
     client = FakeClient(answer)
     baseline = Baseline(Baseline.Settings(name="baseline"), task, BOOKLETS)
-    return strategies.answer(baseline, case, strategies.LLM(client, "some-model", request)), client
+    return baseline.answer(case, LLM(client, "some-model", request)), client
 
 
 def test_parse_label():

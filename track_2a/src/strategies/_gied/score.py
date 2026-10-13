@@ -25,7 +25,8 @@ from pathlib import Path
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
-from src import dataset, evaluate, strategies
+from src import dataset, evaluate
+from src.catalog import Catalog
 from src.nli import LABELS
 
 ROOT = Path(__file__).resolve().parents[3]  # track_2a/
@@ -113,11 +114,12 @@ class NoModel:
 
 
 def score_retrieval(overrides: list[str]) -> None:
-    strategies.register()
+    catalog = Catalog()
+    catalog.register()
     with initialize_config_dir(config_dir=str(ROOT / "conf"), version_base=None):
         cfg = compose(config_name="config", overrides=[*overrides, "task=advanced"])
     settings = OmegaConf.to_object(cfg.strategy)
-    cls = strategies.load(cfg.strategy.name)
+    cls = catalog.load(cfg.strategy.name)
     cases_dir = ROOT / cfg.data_dirs.advanced
     strategy = cls(settings, "advanced", {}, cases_dir=cases_dir)
     if not hasattr(strategy, "search"):
