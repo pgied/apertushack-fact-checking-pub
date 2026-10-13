@@ -13,6 +13,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "rapidfuzz>=3.14.6",  # the challenge's evidence check, in src/strategies/_gied/score.py
 ]
 # PyTorch, for local models and src/device.py. Installed by default, but not in the Docker image
 # (uv sync --no-default-groups): that runs on the CPU, and torch would add gigabytes of CUDA libraries.

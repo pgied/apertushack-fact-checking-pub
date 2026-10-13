@@ -68,7 +68,7 @@ uv run pytest                              # the tests
 
 ### Layout
 
-- [`src/`](src/): the source code. [`src/entrypoint.py`](src/entrypoint.py) is the challenge's CLI. For developing, run `uv run python -m src --help`. The strategies, one file or folder each, are in [`src/strategies/`](src/strategies/).
+- [`src/`](src/): the source code. [`src/entrypoint.py`](src/entrypoint.py) is the challenge's CLI. For developing, run `uv run python -m src --help`. The strategies, one folder each, are in [`src/strategies/`](src/strategies/).
 - [`conf/`](conf/): the configuration (Hydra): which model, which backend, the generation settings.
 - [`tests/`](tests/): the tests, run with `uv run pytest`.
 - `data/`: everything generated, not in git: the dataset and one folder per run in `data/runs/`. Only the sample for `make run`, [`data/examples/`](data/examples/), is in git.

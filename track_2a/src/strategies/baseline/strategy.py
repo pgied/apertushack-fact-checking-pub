@@ -6,7 +6,7 @@
   the challenge's baseline for the advanced task. The model answers with the label and the page it
   based it on, and the text of that page is the evidence.
 
-To start a strategy of your own, copy this file to src/strategies/<name>.py, rename the class and
+To start a strategy of your own, copy this folder to src/strategies/<name>/, rename the class and
 run it with strategy=<name>.
 """
 

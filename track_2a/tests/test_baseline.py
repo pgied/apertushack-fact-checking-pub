@@ -10,7 +10,7 @@ from hydra import compose, initialize_config_dir
 from src import device, nli, strategies
 from src.backend import load_dotenv
 from src.evaluate import macro_f1
-from src.strategies.baseline import Baseline
+from src.strategies.baseline.strategy import Baseline
 
 CONF = Path(__file__).resolve().parent.parent / "conf"
 REQUEST = {"temperature": 0, "max_tokens": 10}

@@ -1,12 +1,13 @@
-"""Strategies: the ways we try to decide a case, one file or folder each, for the beginner and the advanced task.
+"""Strategies: the ways we try to decide a case, one folder each, for the beginner and the advanced task.
 
-A strategy is a file src/strategies/<name>.py, or a folder src/strategies/<name>/ for a bigger one,
-that defines one subclass of Strategy. It is found by its name, so nothing else has to change:
+A strategy is a folder src/strategies/<name>/ with an empty __init__.py and its code in modules, one
+of which defines one subclass of Strategy (a single file src/strategies/<name>.py works too). It is
+found by its name, so nothing else has to change:
 
     uv run python -m src strategy=<name> task=advanced limit=30
 
 Files and folders whose names start with _ are not strategies: they can hold code that strategies
-share. The baseline in baseline.py is the template to copy.
+share. The baseline in baseline/ is the template to copy.
 """
 
 import importlib
@@ -75,10 +76,11 @@ class Strategy:
         temperature: float = 0.0  # sent with every request
         max_tokens: int = 10  # sent with every request; the baseline answers with a word and a page
 
-    def __init__(self, settings: Settings, task: str, booklets: dict[str, list[str]]):
+    def __init__(self, settings: Settings, task: str, booklets: dict[str, list[str]], cases_dir: Path | None = None):
         self.settings = settings
         self.task = task
         self.booklets = booklets  # advanced task: the booklets of the run's cases, by path, page by page
+        self.cases_dir = cases_dir  # the folder of cases.jsonl: booklet paths are relative to it
 
     def setup(self, cases: list[dict], llm: LLM) -> None:
         """Called once per run, before the cases, with all of them: e.g. split the booklets into chunks
@@ -101,11 +103,14 @@ def names() -> list[str]:
 def load(name: str) -> type[Strategy]:
     """The subclass of Strategy that src/strategies/<name> defines, in the file or anywhere in the folder."""
     module = importlib.import_module(f"{__name__}.{name}")
-    found = [
-        value for value in vars(module).values()
-        if isinstance(value, type) and issubclass(value, Strategy)
-        and (value.__module__ == module.__name__ or value.__module__.startswith(module.__name__ + "."))
-    ]
+    modules = [module]
+    if hasattr(module, "__path__"):  # a folder: its __init__.py stays empty, so look in its modules
+        modules += [importlib.import_module(f"{module.__name__}.{sub.name}") for sub in pkgutil.iter_modules(module.__path__)]
+    found = []
+    for value in (value for m in modules for value in vars(m).values()):
+        if (isinstance(value, type) and issubclass(value, Strategy) and value not in found
+                and (value.__module__ == module.__name__ or value.__module__.startswith(module.__name__ + "."))):
+            found.append(value)
     if len(found) != 1:
         raise TypeError(f"src/strategies/{name} has to define one subclass of Strategy, not {len(found)}")
     return found[0]
@@ -134,7 +139,7 @@ def start(cls: type[Strategy], settings: Strategy.Settings, task: str, cases: li
     if task == "advanced":  # booklet paths are relative to the folder of cases.jsonl
         for path in sorted({case["booklet"]["path"] for case in cases}):
             booklets[path] = pdf.pages(cases_dir / path)
-    strategy = cls(settings, task, booklets)
+    strategy = cls(settings, task, booklets, cases_dir=cases_dir)
     strategy.setup(cases, llm)
     return strategy, {
         "cases": len(cases),
