@@ -1,6 +1,8 @@
 """Score predictions against the gold labels: macro-F1 first, then breakdowns, evidence and efficiency."""
 
 import math
+import re
+import unicodedata
 from collections import Counter
 
 from src.nli import LABELS
@@ -61,6 +63,11 @@ def report(gold_records: list[dict], predictions: list[dict], setup: dict | None
         hits = sum(bool(pages(preds[i]) & pages(gold[i])) for i in idx)
         lines.append(f"  page hit        {hits / len(idx):.3f}   ({len(idx)} cases with gold entailment or "
                      "contradiction: a predicted page is one of the gold pages)")
+        try:
+            found = sum(evidence_found(preds[i]["evidence"], gold[i]["evidence"]) for i in idx)
+            lines.append(f"  hit@5           {found / len(idx):.3f}   (one of the first 5 passages matches the gold text)")
+        except ImportError:
+            lines.append("  hit@5           not computed: rapidfuzz is missing, run `uv sync`")
 
     input_tokens = [p["metrics"]["input_tokens"] for p in preds]
     output_tokens = [p["metrics"]["output_tokens"] for p in preds]
@@ -78,6 +85,24 @@ def report(gold_records: list[dict], predictions: list[dict], setup: dict | None
         lines.append(f"  setup           {ms:,} ms once for {cases} cases, {ms / cases:,.0f} ms per case; "
                      f"{setup['input_tokens']:,} input and {setup['output_tokens']:,} output tokens")
     return "\n".join(lines)
+
+
+def normalize(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text).replace("\u00ad", "").replace("\ufffe", "")
+    text = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", text)
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def evidence_found(evidence: list[dict], gold_evidence: list[dict], k: int = 5, max_chars: int = 5000) -> bool:
+    """Hit@k: one of the first k passages, at most max_chars long, matches the gold passage with partial_ratio >= 90."""
+    from rapidfuzz import fuzz
+
+    passage = normalize(" ".join(e["text"] for e in gold_evidence))
+    for item in evidence[:k]:
+        text = normalize(item.get("text") or "")
+        if text and len(item["text"]) <= max_chars and fuzz.partial_ratio(text, passage) >= 90:
+            return True
+    return False
 
 
 def pages(record: dict) -> set:
