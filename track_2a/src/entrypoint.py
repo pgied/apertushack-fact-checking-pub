@@ -11,6 +11,8 @@ It follows the contract of the challenge's Solution API Guide, https://hackapert
 - The model and the strategy are the ones we submit, SUBMITTED below. Hydra overrides after the
   arguments change them, e.g. model=apertus-8b; LLM_NAME in the environment sets the model name.
   The endpoint and its key come from BASE_URL and API_KEY, see conf/config.yaml.
+- At the end it prints the run's time without the model, which the challenge's time score counts
+  (src/timing.py). The organisers measure their own; `metrics.inference_time_ms` is not scored.
 """
 
 import argparse
@@ -24,12 +26,13 @@ from pathlib import Path
 from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig, OmegaConf
 
-from src import dataset
+from src import STARTED, dataset
 from src.backend import load_dotenv, make_client
 from src.catalog import Catalog
 from src.llm import LLM
 from src.nli import LABELS
 from src.strategy import Strategy
+from src.timing import Stopwatch, describe
 
 ROOT = Path(__file__).resolve().parent.parent  # relative paths in the config start here
 
@@ -65,12 +68,14 @@ def main(argv: list[str] | None = None) -> None:
     settings = OmegaConf.to_object(cfg.strategy)  # the strategy's own Settings class, with the overrides
     request = {"temperature": settings.temperature, "max_tokens": settings.max_tokens,
                **OmegaConf.to_container(backend.options)}
+    stopwatch = Stopwatch(STARTED)  # the run's time without the model, which the challenge's time score counts
 
     def llm() -> LLM:  # every case gets its own, to count its tokens
-        return LLM(client, cfg.model.name, request)
+        return LLM(client, cfg.model.name, request, stopwatch.in_flight)
 
     # Once per task, for all its cases: read the booklets and set up the strategy. If that fails, the
     # task's cases are answered neutral, and the other task still runs.
+    stopwatch.lap("startup")  # Python's start, the imports, the configuration and reading the cases
     started = {}
     for task, task_cases in by_task.items():
         try:
@@ -81,6 +86,7 @@ def main(argv: list[str] | None = None) -> None:
             print(f"{task}: setting up failed, its {len(task_cases)} cases are answered neutral: {error!r}",
                   file=sys.stderr)
     print(f"Deciding {len(cases)} cases with the strategy {cfg.strategy.name} and {cfg.model.name}", file=sys.stderr)
+    stopwatch.lap("setup")
 
     failed = 0
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -91,8 +97,10 @@ def main(argv: list[str] | None = None) -> None:
             failed += not ok
             out.write(json.dumps(prediction, ensure_ascii=False) + "\n")
             out.flush()
+    stopwatch.lap("cases")
     print(f"Wrote {len(cases)} predictions to {args.output}"
           + (f", {failed} of them neutral because they failed" if failed else ""), file=sys.stderr)
+    print(f"Time without the model: {describe(stopwatch.summary(len(cases), backend.workers))}", file=sys.stderr)
 
 
 def configure(overrides: list[str]) -> DictConfig:

@@ -86,9 +86,10 @@ def score_run(run: Path) -> None:
     task = saved.get("task", "beginner")
     gold = dataset.read_jsonl(ROOT / saved.data_dirs[task] / "gold.jsonl")
     predictions = {p["id"]: p for p in dataset.read_jsonl(run / "predictions.jsonl")}
-    setup = run / "setup.json"
+    setup, timing = run / "setup.json", run / "time.json"
     print(f"{run}\n{task.capitalize()} task, strategy {saved.strategy.name}, model {saved.model.name}")
-    print(evaluate.report(gold, list(predictions.values()), json.loads(setup.read_text()) if setup.exists() else None))
+    print(evaluate.report(gold, list(predictions.values()), json.loads(setup.read_text()) if setup.exists() else None,
+                          json.loads(timing.read_text()) if timing.exists() else None))
     if task == "advanced":
         passages = references()
         results = [(g, found(predictions[g["id"]]["evidence"], passages[row(g["id"])]))

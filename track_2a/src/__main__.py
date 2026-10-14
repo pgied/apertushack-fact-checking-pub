@@ -21,11 +21,12 @@ from pathlib import Path
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
-from src import dataset, evaluate
+from src import STARTED, dataset, evaluate
 from src.backend import load_dotenv, make_client
 from src.catalog import Catalog
 from src.llm import LLM
 from src.strategy import TASKS
+from src.timing import Stopwatch
 
 ROOT = Path(__file__).resolve().parent.parent  # relative paths in the config start here
 
@@ -89,14 +90,17 @@ def predict(cfg: DictConfig) -> None:
     settings = OmegaConf.to_object(cfg.strategy)  # the strategy's own Settings class, with the overrides
     request = {"temperature": settings.temperature, "max_tokens": settings.max_tokens,
                **OmegaConf.to_container(backend.options)}
+    stopwatch = Stopwatch(STARTED)  # the run's time without the model, which the challenge's time score counts
 
     def llm() -> LLM:  # every case gets its own, to count its tokens
-        return LLM(client, cfg.model.name, request)
+        return LLM(client, cfg.model.name, request, stopwatch.in_flight)
 
     # Once per run, for all its cases: read the booklets and set up the strategy, measured apart from the cases
+    stopwatch.lap("startup")  # Python's start, the imports, the configuration and reading the cases
     strategy, setup = strategy_class.start(settings, cfg.task, cases, cases_file.parent, llm())
     (run / "setup.json").write_text(json.dumps(setup) + "\n")
     print(f"Set up in {setup['setup_time_ms']:,} ms, {setup['booklets']} booklets read")
+    stopwatch.lap("setup")
 
     failed = 0
     with open(predictions, "a", encoding="utf-8") as out, ThreadPoolExecutor(backend.workers) as pool:
@@ -112,6 +116,8 @@ def predict(cfg: DictConfig) -> None:
             out.flush()
             if n % 50 == 0 or n == len(todo):
                 print(f"  {n}/{len(todo)}")
+    stopwatch.lap("cases")
+    (run / "time.json").write_text(json.dumps(stopwatch.summary(len(todo), backend.workers)) + "\n")
     if failed:
         print(f"{failed} cases failed. Continue the run to retry them: run_dir={cfg.run_dir}")
     write_scores(cfg, run)
@@ -138,9 +144,10 @@ def write_scores(cfg: DictConfig, run: Path) -> None:
     task = saved.get("task", "beginner")  # runs from before the strategies did the beginner task with the baseline
     strategy = OmegaConf.select(saved, "strategy.name", default="baseline")
     gold = dataset.read_jsonl(ROOT / cfg.data_dirs[task] / "gold.jsonl")
-    setup = run / "setup.json"
+    setup, timing = run / "setup.json", run / "time.json"
     report = evaluate.report(gold, dataset.read_jsonl(run / "predictions.jsonl"),
-                             json.loads(setup.read_text()) if setup.exists() else None)
+                             json.loads(setup.read_text()) if setup.exists() else None,
+                             json.loads(timing.read_text()) if timing.exists() else None)
     report = f"{task.capitalize()} task, strategy {strategy}, model {saved.model.name}\n{report}"
     (run / "scores.txt").write_text(report + "\n")
     print(f"\n{run}\n{report}")

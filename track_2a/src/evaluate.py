@@ -6,6 +6,7 @@ import unicodedata
 from collections import Counter
 
 from src.nli import LABELS
+from src.timing import describe
 
 NEUTRAL = LABELS.index("neutral")
 
@@ -21,8 +22,10 @@ def macro_f1(gold: list[int], pred: list[int]) -> float:
     return sum(scores) / len(scores)
 
 
-def report(gold_records: list[dict], predictions: list[dict], setup: dict | None = None) -> str:
-    """The scores of the predictions. `setup` is what setting up the run took, from its setup.json."""
+def report(gold_records: list[dict], predictions: list[dict], setup: dict | None = None,
+           timing: dict | None = None) -> str:
+    """The scores of the predictions. `setup` is what setting up the run took, from its setup.json, and
+    `timing` the run's time without the model, from its time.json."""
     gold_by_id = {g["id"]: g for g in gold_records}
     preds = [p for p in predictions if p["id"] in gold_by_id]
     gold = [gold_by_id[p["id"]] for p in preds]
@@ -76,15 +79,27 @@ def report(gold_records: list[dict], predictions: list[dict], setup: dict | None
     lines += [
         "",
         "Efficiency",
-        f"  input tokens    {sum(input_tokens):,} in total, {sum(input_tokens) / len(preds):,.0f} per case",
-        f"  output tokens   {sum(output_tokens):,} in total",
-        f"  inference time  {sum(times) / len(times):,.0f} ms mean, {p95:,} ms p95",
+        f"  input tokens     {sum(input_tokens):,} in total, {sum(input_tokens) / len(preds):,.0f} per case",
+        f"  output tokens    {sum(output_tokens):,} in total",
+        *processing_time(timing, len(preds)),
+        f"  inference time   {sum(times) / len(times):,.0f} ms mean, {p95:,} ms p95 "
+        "(not scored: each case's time, with the model's latency)",
     ]
     if setup:  # done once for all the run's cases: reading the booklets, and the strategy's setup()
         ms, cases = setup["setup_time_ms"], max(1, setup["cases"])
-        lines.append(f"  setup           {ms:,} ms once for {cases} cases, {ms / cases:,.0f} ms per case; "
+        lines.append(f"  setup            {ms:,} ms once for {cases} cases, {ms / cases:,.0f} ms per case; "
                      f"{setup['input_tokens']:,} input and {setup['output_tokens']:,} output tokens")
     return "\n".join(lines)
+
+
+def processing_time(timing: dict | None, predictions: int) -> list[str]:
+    """The lines on the run's time without the model, which the challenge's time score counts."""
+    if not timing:
+        return ["  processing time  not measured: the run has no time.json"]
+    note = f"scored: the wall-clock time without requests to the model in flight, {timing['workers']} in parallel"
+    if timing["cases"] != predictions:
+        note += f"; measured when the run was last continued, on {timing['cases']:,} of its {predictions:,} cases"
+    return [f"  processing time  {describe(timing)}", f"                   ({note})"]
 
 
 def normalize(text: str) -> str:

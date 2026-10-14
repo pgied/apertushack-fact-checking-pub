@@ -68,9 +68,12 @@ def run(tmp_path, monkeypatch, client: Client, cases: list[dict] = CASES, pages=
     return {prediction["id"]: prediction for prediction in predictions}
 
 
-def test_a_file_with_both_tasks_gets_one_line_per_case(tmp_path, monkeypatch):
+def test_a_file_with_both_tasks_gets_one_line_per_case(tmp_path, monkeypatch, capsys):
     client = Client("contradiction 2")
     predictions = run(tmp_path, monkeypatch, client)
+
+    # The run's time without the model, which the challenge's time score counts, is printed at the end
+    assert "Time without the model: " in capsys.readouterr().err
 
     assert set(predictions) == {"v1.1-row-7-A", "v1.1-row-7-B"}
     for prediction in predictions.values():

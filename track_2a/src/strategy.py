@@ -102,6 +102,8 @@ class Strategy:
             "metrics": {
                 "input_tokens": llm.input_tokens,
                 "output_tokens": llm.output_tokens,
-                "inference_time_ms": inference_time_ms,  # all of predict(): every request, and whatever else it does
+                # all of predict(): every request, and whatever else it does. The challenge's format asks for
+                # it, but its time score is the run's time without the model (src/timing.py)
+                "inference_time_ms": inference_time_ms,
             },
         }
