@@ -85,14 +85,18 @@ class Retrieve(Baseline):
         A claim in another language than the booklet is searched in the booklet's edition in its own
         language, and each sentence found there is swapped for the one at the same place in the
         booklet. Without that edition, Apertus translates the claim first."""
-        k = k or self.settings.hits
-        claim = case["claim"]["text"]
+        k, claim, pages = k or self.settings.hits, case["claim"]["text"], self.scope(case)
         if case["claim"]["language"] == case["booklet"]["language"]:
-            return booklet.search(claim, k)
+            return booklet.search(claim, k, pages)
         if edition := self.edition(case):
-            swapped = [booklet.same_place(sentence, edition) for sentence in edition.search(claim, k)]
+            swapped = [booklet.same_place(sentence, edition) for sentence in edition.search(claim, k, pages)]
             return list(dict.fromkeys(sentence for sentence in swapped if sentence))
-        return booklet.search(self.translate(case, llm), k)
+        return booklet.search(self.translate(case, llm), k, pages)
+
+    def scope(self, case: dict) -> set[int] | None:
+        """The pages of the booklet that are searched for the case: all of them (None). A strategy can
+        narrow this down; the editions have the same pages, so it holds for them too."""
+        return None
 
     def edition(self, case: dict) -> Booklet | None:
         """The booklet's edition in the claim's language, if the claim is in another language, `pivot` is

@@ -1,16 +1,20 @@
 """Tests for the strategies built on gied_tags_prompt_adapted: searching further after a neutral answer,
-paraphrases, and evidence from two editions. With a scripted stand-in model and the example booklet."""
+paraphrases, evidence from two editions, and searching only the claim's vote. With a scripted stand-in
+model and the example booklet."""
 
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from src import dataset
+from src import dataset, pdf
 from src.llm import LLM
+from src.strategies._booklet import vote_pages
 from src.strategies._gied.index import Sentence, fuse
+from src.strategies.gied_multi_lang_evidence.strategy import SYSTEM_PROMPT as MULTI_LANG_PROMPT
 from src.strategies.gied_multi_lang_evidence.strategy import GiedMultiLangEvidence
 from src.strategies.gied_multi_lang_paraphrase.strategy import GiedMultiLangParaphrase
+from src.strategies.gied_multi_lang_scoped.strategy import RULES_PROMPT, GiedMultiLangScoped
 from src.strategies.gied_paraphrase.strategy import GiedParaphrase
 from src.strategies.gied_retrieval_improvement.strategy import GiedRetrievalImprovement
 
@@ -117,6 +121,20 @@ def test_multi_lang_paraphrase_with_a_claim_in_the_booklet_language_shows_one_ed
     prediction = decide(GiedMultiLangParaphrase, two_editions, client, same)
     assert len(client.requests) == 2 and "EDITION:" not in client.decisions_asked()[0]["messages"][1]["content"]
     assert prediction["evidence"]
+
+
+def test_scoped_quotes_only_the_pages_of_the_claims_vote(two_editions):
+    weapons = next(c for c in dataset.read_jsonl(EXAMPLES / "cases.jsonl") if c["id"] == "v1.1-row-1104-A")
+    pages = set(vote_pages(pdf.pages(EXAMPLES / "booklets" / "2020_11_29_fr.pdf"), weapons["vote"]))
+    assert 0 < len(pages) < 32  # the booklet has two votes
+    prediction = decide(GiedMultiLangScoped, two_editions, Scripted("contradiction 1"), weapons)
+    assert prediction["evidence"] and {item["page"] for item in prediction["evidence"]} <= pages
+
+
+def test_scoped_takes_the_rules_prompt_only_when_told_to(two_editions):
+    with_rules = GiedMultiLangScoped(GiedMultiLangScoped.Settings(name="s", rules=True), "advanced", {}, cases_dir=two_editions)
+    without = GiedMultiLangScoped(GiedMultiLangScoped.Settings(name="s"), "advanced", {}, cases_dir=two_editions)
+    assert with_rules.system_prompt == RULES_PROMPT and without.system_prompt == MULTI_LANG_PROMPT
 
 
 def test_fuse_puts_first_what_several_rankings_put_high():

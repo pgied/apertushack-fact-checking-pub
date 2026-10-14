@@ -41,9 +41,10 @@ class Booklet:
         self.sentences = sentences(blocks)
         self.bm25 = BM25([terms(sentence.text) for sentence in self.sentences])
 
-    def search(self, query: str, k: int) -> list[Sentence]:
-        """The k sentences that match the query best, best first. Each sentence also gets 30 % of the
-        score of its better neighbour on the same page, since the text around it helps to find it."""
+    def search(self, query: str, k: int, pages: set[int] | None = None) -> list[Sentence]:
+        """The k sentences that match the query best, best first, only on `pages` if given. Each sentence
+        also gets 30 % of the score of its better neighbour on the same page, since the text around it
+        helps to find it."""
         scores = self.bm25.scores(terms(query))
         boosted = []
         for i, sentence in enumerate(self.sentences):
@@ -54,6 +55,8 @@ class Booklet:
         for i in sorted(range(len(boosted)), key=lambda i: -boosted[i]):
             if boosted[i] <= 0 or len(best) == k:
                 break
+            if pages is not None and self.sentences[i].page not in pages:
+                continue
             if all(self.sentences[i].text != sentence.text for sentence in best):
                 best.append(self.sentences[i])
         return best

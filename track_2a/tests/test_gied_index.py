@@ -48,6 +48,13 @@ def test_search_finds_the_sentence_about_the_claim():
     assert found.search("Kernkraftwerke", 3) == []  # no word in common, nothing found
 
 
+def test_search_can_keep_to_some_pages():
+    found = booklet("Der Bund investiert jährlich 600 Millionen Franken in die Biodiversität.",
+                    "Die Reform kostet den Bund jährlich 600 Millionen Franken mehr als heute.")
+    assert {s.page for s in found.search("600 Millionen Franken", 5)} == {1, 2}
+    assert {s.page for s in found.search("600 Millionen Franken", 5, pages={2})} == {2}
+
+
 def test_a_sentence_has_its_counterpart_at_the_same_place_in_the_other_edition():
     german = booklet("Erster Satz auf der ersten Seite des Büchleins. Zweiter Satz auf der ersten Seite des Büchleins.",
                      "Ein Absatz auf Seite zwei mit genug Text, um ein Satz zu sein.")

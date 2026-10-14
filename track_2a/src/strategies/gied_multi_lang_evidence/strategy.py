@@ -28,9 +28,9 @@ class GiedMultiLangEvidence(GiedTagsPromptAdapted):
         edition = self.edition(case)
         if edition is None:
             return super().check_booklet(case, llm)
-        booklet, hits = self.booklet(case["booklet"]["path"]), self.settings.hits
-        here = booklet.search(self.translate(case, llm), hits)  # the booklet, with the translated claim
-        there = edition.search(case["claim"]["text"], hits)  # the edition in the claim's language
+        booklet, hits, pages = self.booklet(case["booklet"]["path"]), self.settings.hits, self.scope(case)
+        here = booklet.search(self.translate(case, llm), hits, pages)  # the booklet, with the translated claim
+        there = edition.search(case["claim"]["text"], hits, pages)  # the edition in the claim's language
         own, other = self.excerpts(booklet, here), self.excerpts(edition, there)
         label, numbers = self.ask(case, two_editions(own, other, case["claim"]["language"]), llm)
         found = fuse([here, in_booklet(booklet, edition, there)])
