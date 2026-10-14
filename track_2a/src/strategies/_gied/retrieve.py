@@ -76,31 +76,44 @@ class Retrieve(Baseline):
         booklet = self.booklet(case["booklet"]["path"])
         found = self.find(case, booklet, llm)
         excerpts = self.excerpts(booklet, found)
-        prompt = f"VOTE:\n{case['vote']}\n\nEXCERPTS:\n{numbered(excerpts)}\n\nCLAIM:\n{case['claim']['text']}\n\nAnswer:"
-        answer = llm.chat([{"role": "system", "content": self.system_prompt}, {"role": "user", "content": prompt}])
-        cited = [excerpts[int(n) - 1] for n in re.findall(r"\d+", answer) if 0 < int(n) <= len(excerpts)]
-        return Verdict(read_label(case, answer), evidence(found, cited, case["vote"]))
+        label, numbers = self.ask(case, numbered(excerpts), llm)
+        return Verdict(label, evidence(found, cited(excerpts, numbers), case["vote"]))
 
-    def find(self, case: dict, booklet: Booklet, llm: LLM) -> list[Sentence]:
-        """The sentences of the booklet that bear on the claim, best first."""
-        path, claim, hits = case["booklet"]["path"], case["claim"]["text"], self.settings.hits
+    def find(self, case: dict, booklet: Booklet, llm: LLM, k: int = 0) -> list[Sentence]:
+        """The k sentences of the booklet that bear most on the claim, best first (k = hits by default).
+
+        A claim in another language than the booklet is searched in the booklet's edition in its own
+        language, and each sentence found there is swapped for the one at the same place in the
+        booklet. Without that edition, Apertus translates the claim first."""
+        k = k or self.settings.hits
+        claim = case["claim"]["text"]
         if case["claim"]["language"] == case["booklet"]["language"]:
-            return booklet.search(claim, hits)
-        edition_path = re.sub(r"_[a-z]{2}\.pdf$", f"_{case['claim']['language']}.pdf", path)
-        if self.settings.pivot and (self.cases_dir / edition_path).exists():
-            edition = self.booklet(edition_path)
-            if edition.pages == booklet.pages:
-                swapped = [booklet.same_place(sentence, edition) for sentence in edition.search(claim, hits)]
-                return list(dict.fromkeys(sentence for sentence in swapped if sentence))
-        language = LANGUAGES.get(case["booklet"]["language"], "the booklet's language")
-        translated = llm.chat([{"role": "user", "content": TRANSLATE_PROMPT.format(language=language, claim=claim)}],
-                              max_tokens=200)
-        return booklet.search(translated, hits)
+            return booklet.search(claim, k)
+        if edition := self.edition(case):
+            swapped = [booklet.same_place(sentence, edition) for sentence in edition.search(claim, k)]
+            return list(dict.fromkeys(sentence for sentence in swapped if sentence))
+        return booklet.search(self.translate(case, llm), k)
 
-    def excerpts(self, booklet: Booklet, found: list[Sentence]) -> list[list[Sentence]]:
+    def edition(self, case: dict) -> Booklet | None:
+        """The booklet's edition in the claim's language, if the claim is in another language, `pivot` is
+        on, and that edition is in the same folder with the same pages."""
+        path, language = case["booklet"]["path"], case["claim"]["language"]
+        other = re.sub(r"_[a-z]{2}\.pdf$", f"_{language}.pdf", path)
+        if not self.settings.pivot or other == path or not (self.cases_dir / other).exists():
+            return None
+        edition = self.booklet(other)
+        return edition if edition.pages == self.booklet(path).pages else None
+
+    def translate(self, case: dict, llm: LLM) -> str:
+        """The claim, translated by Apertus into the booklet's language."""
+        language = LANGUAGES.get(case["booklet"]["language"], "the booklet's language")
+        prompt = TRANSLATE_PROMPT.format(language=language, claim=case["claim"]["text"])
+        return llm.chat([{"role": "user", "content": prompt}], max_tokens=200)
+
+    def excerpts(self, booklet: Booklet, found: list[Sentence], shown=frozenset()) -> list[list[Sentence]]:
         """For each sentence found, best first: it and its neighbours on the page. A sentence is in one
-        excerpt only, and the excerpts stop at about context_chars characters."""
-        excerpts, used, size = [], set(), 0
+        excerpt only, and in none if it is in `shown`; the excerpts stop at about context_chars characters."""
+        excerpts, used, size = [], set(shown), 0
         for sentence in found:
             excerpt = [s for s in booklet.around(sentence) if s not in used]
             if not excerpt:
@@ -113,14 +126,26 @@ class Retrieve(Baseline):
             size += length
         return excerpts
 
+    def ask(self, case: dict, context: str, llm: LLM) -> tuple[int, list[int]]:
+        """Apertus' answer about the claim, given numbered excerpts: the label, and the numbers in the
+        answer, which are the excerpts it cites."""
+        prompt = f"VOTE:\n{case['vote']}\n\nEXCERPTS:\n{context}\n\nCLAIM:\n{case['claim']['text']}\n\nAnswer:"
+        answer = llm.chat([{"role": "system", "content": self.system_prompt}, {"role": "user", "content": prompt}])
+        return read_label(case, answer), [int(n) for n in re.findall(r"\d+", answer)]
 
-def numbered(excerpts: list[list[Sentence]]) -> str:
+
+def numbered(excerpts: list[list[Sentence]], start: int = 1) -> str:
     """The excerpts as the model reads them: "[1] (p. 12, In Kürze › Ausgangslage) text"."""
     lines = []
-    for n, excerpt in enumerate(excerpts, 1):
+    for n, excerpt in enumerate(excerpts, start):
         where = f"p. {excerpt[0].page}" + (f", {excerpt[0].section}" if excerpt[0].section else "")
         lines.append(f"[{n}] ({where}) " + " ".join(sentence.text for sentence in excerpt))
     return "\n\n".join(lines) or "(none found)"
+
+
+def cited(excerpts: list[list[Sentence]], numbers: list[int]) -> list[list[Sentence]]:
+    """The excerpts with these numbers, counted from 1; other numbers in the answer are left out."""
+    return [excerpts[n - 1] for n in numbers if 0 < n <= len(excerpts)]
 
 
 def evidence(found: list[Sentence], cited: list[list[Sentence]], vote: str) -> list[dict]:

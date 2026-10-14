@@ -5,21 +5,25 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=288
-#SBATCH --time=01:00:00
+#SBATCH --time=02:00:00
 #SBATCH --output=slurm/logs/%x-%j.log
 #
-# Decide the cases of one task with a gied_ strategy and Apertus v1.5 on the CSCS Inference API,
-# then score the run, with the challenge's evidence score. Submit from track_2a/, the project root:
+# Decide the cases of one task with gied_ strategies and Apertus v1.5 on the CSCS Inference API, one
+# strategy after the other, and score each run with the challenge's evidence score. Submit from
+# track_2a/, the project root:
 #
 #   sbatch slurm/gied.sbatch                                       # gied_tags_prompt_adapted, advanced task, all 1,488 cases, 70B
+#   STRATEGY="gied_paraphrase gied_multi_lang_evidence gied_multi_lang_paraphrase" sbatch slurm/gied.sbatch
 #   LIMIT=150 sbatch -p debug -t 00:20:00 slurm/gied.sbatch        # a quick check on 150 cases
 #   STRATEGY=gied_tags TASK=beginner sbatch slurm/gied.sbatch      # another strategy or task
 #
-# Settings, from the environment you submit from: STRATEGY, TASK (advanced or beginner), MODEL (a
-# file in conf/model/), LIMIT (cases, spread evenly; all by default) and WORKERS (requests at once).
+# Settings, from the environment you submit from: STRATEGY (one strategy, or several separated by
+# spaces), TASK (advanced or beginner), MODEL (a file in conf/model/), LIMIT (cases, spread evenly;
+# all by default) and WORKERS (requests at once).
 #
 # Apertus runs at CSCS, not on this node: the job reads the booklets and sends the requests, so it
-# spends most of its time waiting for answers. A full run of 1,488 cases takes about 10 to 20 minutes.
+# spends most of its time waiting for answers. A full run of 1,488 cases takes about 10 to 20 minutes
+# per strategy; gied_paraphrase and gied_multi_lang_paraphrase, with one request more per case, the longest.
 # It needs:
 #   - the API key: `export API_KEY=...` before sbatch (Slurm passes your environment on), or API_KEY
 #     in .env, see .env.example;
@@ -27,7 +31,7 @@
 #     the booklets, copy data/raw, data/beginner and data/advanced over from your laptop instead;
 #   - the Python packages: a venv on top of the uenv, made on the first run (about a minute).
 #
-# The run lands in data/runs/<date>_<task>_<strategy>_<model>_slurm-<job id>/, the log in slurm/logs/.
+# Each run lands in data/runs/<date>_<task>_<strategy>_<model>_slurm-<job id>/, the log in slurm/logs/.
 
 set -euo pipefail
 
@@ -49,10 +53,10 @@ export MODEL="${MODEL:-apertus-70b}"
 export LIMIT="${LIMIT:-null}"
 export WORKERS="${WORKERS:-8}"
 export VENV="${VENV:-$SCRATCH/apertushack/venv}"
-export RUN_DIR="data/runs/$(date +%Y-%m-%d_%H-%M-%S)_${TASK}_${STRATEGY}_${MODEL}_slurm-${SLURM_JOB_ID:-0}"
+export JOB="${SLURM_JOB_ID:-0}"
 UENV="${UENV:-pytorch/v2.9.1:v2}"
-echo "[gied.sbatch] job ${SLURM_JOB_ID:-?} on $(hostname), account ${SLURM_JOB_ACCOUNT:-?}: ${STRATEGY}, ${TASK} task," \
-     "model ${MODEL}, limit ${LIMIT}, ${WORKERS} workers -> ${RUN_DIR}"
+echo "[gied.sbatch] job ${JOB} on $(hostname), account ${SLURM_JOB_ACCOUNT:-?}: ${STRATEGY}; ${TASK} task," \
+     "model ${MODEL}, limit ${LIMIT}, ${WORKERS} workers"
 
 # --uenv/--view go on srun, not in the #SBATCH header: there they break the Slurm commands
 # inside the job ("srun: fatal: failed to initialize cli_filter plugin").
@@ -67,7 +71,14 @@ srun --uenv="$UENV" --view=default bash -c '
     if [ ! -f data/advanced/cases.jsonl ] || [ ! -f data/beginner/cases.jsonl ]; then
         python -m src stage=prepare
     fi
-    python -m src task="$TASK" strategy="$STRATEGY" model="$MODEL" limit="$LIMIT" \
-        backends.cscs.workers="$WORKERS" run_dir="$RUN_DIR"
-    python -m src.strategies._gied.score run "$RUN_DIR"
+    for strategy in $STRATEGY; do
+        run_dir="data/runs/$(date +%Y-%m-%d_%H-%M-%S)_${TASK}_${strategy}_${MODEL}_slurm-${JOB}"
+        echo "[gied.sbatch] ${strategy} -> ${run_dir}"
+        if ! python -m src task="$TASK" strategy="$strategy" model="$MODEL" limit="$LIMIT" \
+                backends.cscs.workers="$WORKERS" run_dir="$run_dir"; then
+            echo "[gied.sbatch] ${strategy} failed, going on with the next strategy" >&2
+            continue
+        fi
+        python -m src.strategies._gied.score run "$run_dir"
+    done
 '

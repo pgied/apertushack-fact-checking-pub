@@ -76,6 +76,16 @@ class Booklet:
         return [sentence for sentence in self.sentences if sentence.page == page]
 
 
+def fuse(rankings: list[list[Sentence]]) -> list[Sentence]:
+    """Several rankings merged into one by reciprocal rank fusion: a sentence scores 1 / (60 + its rank)
+    in each ranking it is in, so sentences that several rankings put high come first."""
+    scores: dict[Sentence, float] = defaultdict(float)
+    for ranking in rankings:
+        for rank, sentence in enumerate(ranking, 1):
+            scores[sentence] += 1 / (60 + rank)
+    return sorted(scores, key=lambda sentence: -scores[sentence])
+
+
 def sentences(blocks: list[Block]) -> list[Sentence]:
     """The sentences of the body text, each with its page and the two nearest headings above it."""
     headings: dict[int, str] = {}  # level → the latest heading of that level
