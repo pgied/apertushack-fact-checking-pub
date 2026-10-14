@@ -47,6 +47,7 @@ TRANSLATE_PROMPT = "Translate this claim into {language}. Answer with the transl
 
 class Retrieve(Baseline):
     tasks = ("beginner", "advanced")
+    system_prompt = SYSTEM_PROMPT  # what Apertus is told in the advanced task; a strategy can change it
 
     @dataclass
     class Settings(Baseline.Settings):
@@ -76,7 +77,7 @@ class Retrieve(Baseline):
         found = self.find(case, booklet, llm)
         excerpts = self.excerpts(booklet, found)
         prompt = f"VOTE:\n{case['vote']}\n\nEXCERPTS:\n{numbered(excerpts)}\n\nCLAIM:\n{case['claim']['text']}\n\nAnswer:"
-        answer = llm.chat([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}])
+        answer = llm.chat([{"role": "system", "content": self.system_prompt}, {"role": "user", "content": prompt}])
         cited = [excerpts[int(n) - 1] for n in re.findall(r"\d+", answer) if 0 < int(n) <= len(excerpts)]
         return Verdict(read_label(case, answer), evidence(found, cited, case["vote"]))
 
