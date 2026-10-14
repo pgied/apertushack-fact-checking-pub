@@ -32,14 +32,14 @@ class GiedParaphrase(GiedTagsPromptAdapted):
     def find(self, case: dict, booklet: Booklet, llm: LLM, k: int = 0) -> list[Sentence]:
         k = k or self.settings.hits
         rankings = [super().find(case, booklet, llm, k)]  # the claim itself
-        rankings += [booklet.search(version, k) for version in paraphrases(case, llm, self.settings.versions)]
+        versions = paraphrases(case["claim"]["text"], case["booklet"]["language"], llm, self.settings.versions)
+        rankings += [booklet.search(version, k) for version in versions]
         return fuse(rankings)[:k]
 
 
-def paraphrases(case: dict, llm: LLM, versions: int) -> list[str]:
-    """The claim in simpler words, `versions` times, in the booklet's language: one request."""
-    language = LANGUAGES.get(case["booklet"]["language"], "the booklet's language")
-    prompt = PARAPHRASE_PROMPT.format(versions=versions, language=language, claim=case["claim"]["text"])
+def paraphrases(claim: str, language: str, llm: LLM, versions: int) -> list[str]:
+    """The claim in simpler words, `versions` times, in `language` (de, fr or it): one request."""
+    prompt = PARAPHRASE_PROMPT.format(versions=versions, language=LANGUAGES.get(language, language), claim=claim)
     answer = llm.chat([{"role": "user", "content": prompt}], max_tokens=80 * versions)
     lines = [re.sub(r"^\s*(\d+[.)]|[-*•])\s*", "", line).strip() for line in answer.splitlines()]
     return [line for line in lines if line][:versions]

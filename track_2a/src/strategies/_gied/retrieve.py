@@ -110,9 +110,7 @@ class Retrieve(Baseline):
 
     def translate(self, case: dict, llm: LLM) -> str:
         """The claim, translated by Apertus into the booklet's language."""
-        language = LANGUAGES.get(case["booklet"]["language"], "the booklet's language")
-        prompt = TRANSLATE_PROMPT.format(language=language, claim=case["claim"]["text"])
-        return llm.chat([{"role": "user", "content": prompt}], max_tokens=200)
+        return translate(case["claim"]["text"], case["booklet"]["language"], llm)
 
     def excerpts(self, booklet: Booklet, found: list[Sentence], shown=frozenset()) -> list[list[Sentence]]:
         """For each sentence found, best first: it and its neighbours on the page. A sentence is in one
@@ -136,6 +134,12 @@ class Retrieve(Baseline):
         prompt = f"VOTE:\n{case['vote']}\n\nEXCERPTS:\n{context}\n\nCLAIM:\n{case['claim']['text']}\n\nAnswer:"
         answer = llm.chat([{"role": "system", "content": self.system_prompt}, {"role": "user", "content": prompt}])
         return read_label(case, answer), [int(n) for n in re.findall(r"\d+", answer)]
+
+
+def translate(claim: str, language: str, llm: LLM) -> str:
+    """The claim, translated by Apertus into `language` (de, fr or it): one request."""
+    prompt = TRANSLATE_PROMPT.format(language=LANGUAGES.get(language, language), claim=claim)
+    return llm.chat([{"role": "user", "content": prompt}], max_tokens=200)
 
 
 def numbered(excerpts: list[list[Sentence]], start: int = 1) -> str:

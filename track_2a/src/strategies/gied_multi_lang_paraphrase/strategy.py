@@ -34,7 +34,8 @@ class GiedMultiLangParaphrase(GiedTagsPromptAdapted):
 
     def check_booklet(self, case: dict, llm: LLM) -> Verdict:
         booklet, hits, claim = self.booklet(case["booklet"]["path"]), self.settings.hits, case["claim"]["text"]
-        rankings = [booklet.search(version, hits) for version in paraphrases(case, llm, self.settings.versions)]
+        versions = paraphrases(claim, case["booklet"]["language"], llm, self.settings.versions)
+        rankings = [booklet.search(version, hits) for version in versions]
         if case["claim"]["language"] == case["booklet"]["language"]:
             rankings.append(booklet.search(claim, hits))
         here = fuse(rankings)[:hits]
