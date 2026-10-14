@@ -1,6 +1,6 @@
 """Tests for the strategies built on gied_tags_prompt_adapted: searching further after a neutral answer,
-paraphrases, evidence from two editions, and searching only the claim's vote. With a scripted stand-in
-model and the example booklet."""
+paraphrases, evidence from two editions, searching only the claim's vote, and the strict strategies, which
+read only the booklet the case supplies. With a scripted stand-in model and the example booklet."""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +17,8 @@ from src.strategies.gied_multi_lang_paraphrase.strategy import GiedMultiLangPara
 from src.strategies.gied_multi_lang_scoped.strategy import RULES_PROMPT, GiedMultiLangScoped
 from src.strategies.gied_paraphrase.strategy import GiedParaphrase
 from src.strategies.gied_retrieval_improvement.strategy import GiedRetrievalImprovement
+from src.strategies.gied_strict_multi_lang_scoped.strategy import GiedStrictMultiLangScoped
+from src.strategies.gied_strict_paraphrase.strategy import GiedStrictParaphrase
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "data" / "examples"
 CASE = next(c for c in dataset.read_jsonl(EXAMPLES / "cases.jsonl") if c["id"] == "v1.1-row-357-A")  # Italian claim, French booklet
@@ -135,6 +137,37 @@ def test_scoped_takes_the_rules_prompt_only_when_told_to(two_editions):
     with_rules = GiedMultiLangScoped(GiedMultiLangScoped.Settings(name="s", rules=True), "advanced", {}, cases_dir=two_editions)
     without = GiedMultiLangScoped(GiedMultiLangScoped.Settings(name="s"), "advanced", {}, cases_dir=two_editions)
     assert with_rules.system_prompt == RULES_PROMPT and without.system_prompt == MULTI_LANG_PROMPT
+
+
+def test_strict_multi_lang_reads_only_the_supplied_booklet_and_shows_the_translation(two_editions):
+    strategy = GiedStrictMultiLangScoped(GiedStrictMultiLangScoped.Settings(name="s"), "advanced", {}, cases_dir=two_editions)
+    client = Scripted("contradiction 1")
+    prediction = strategy.answer(CASE, LLM(client, "some-model", {}))
+
+    assert list(strategy.read_booklets) == [CASE["booklet"]["path"]]  # not the Italian edition beside it
+    assert [r["messages"][0]["content"][:9] for r in client.requests] == ["Translate", strategy.system_prompt[:9]]
+    system, user = (message["content"] for message in client.decisions_asked()[0]["messages"])
+    assert "EDITION" not in system + user
+    assert "THE CLAIM IN FRENCH (a translation, to compare it with the excerpts):\nLes entreprises suisses" in user
+    assert prediction["label_name"] == "contradiction" and prediction["evidence"]
+
+
+def test_strict_multi_lang_decides_a_claim_in_the_booklet_language_with_one_request(two_editions):
+    same = {**CASE, "claim": {**CASE["claim"], "language": "fr"}}
+    client = Scripted("entailment 1")
+    decide(GiedStrictMultiLangScoped, two_editions, client, same)
+    assert len(client.requests) == 1 and "a translation" not in client.requests[0]["messages"][1]["content"]
+
+
+def test_strict_paraphrase_searches_with_the_translation_and_five_paraphrases(two_editions):
+    strategy = GiedStrictParaphrase(GiedStrictParaphrase.Settings(name="s"), "advanced", {}, cases_dir=two_editions)
+    client = Scripted("entailment 1")
+    prediction = strategy.answer(CASE, LLM(client, "some-model", {}))
+
+    assert [r["messages"][0]["content"][:7] for r in client.requests] == ["Transla", "Rewrite", strategy.system_prompt[:7]]
+    assert list(strategy.read_booklets) == [CASE["booklet"]["path"]]
+    assert "THE CLAIM IN FRENCH (a translation" in client.decisions_asked()[0]["messages"][1]["content"]
+    assert prediction["label_name"] == "entailment" and prediction["evidence"]
 
 
 def test_fuse_puts_first_what_several_rankings_put_high():
