@@ -1,202 +1,195 @@
-"""Read a voting booklet as blocks of plain text, page by page: the readers of the gied_ strategies.
+"""Read a voting booklet as a list of blocks in reading order: the readers of the gied_ strategies.
 
-- pdfium: the PDF's text layer, as src/pdf.py reads it. Short lines that repeat on several pages,
-  such as the running header "Erste Vorlage: Biodiversitätsinitiative", become headings, and page
-  numbers are dropped.
-- tags: the PDF's structure tree. The booklets are tagged PDFs (59 of the 60 so far): their tags
-  give the reading order, the headings and the paragraphs, mark hyphens at line breaks, and leave
-  out running headers and page numbers. An untagged PDF gives None.
-- docling: the JSON that docling wrote for the PDF (see _gied_docling), looked up by the PDF's SHA-256.
+A block is a tuple (page, level, text). The page counts from 1. The level is 1 to 6 for a heading
+(H1 to H6) and 0 for body text. The text is plain, as printed.
 
-A booklet is a list of pages, page n at index n - 1 as in src/pdf.py, and a page is a list of blocks.
-PDFium is not thread-safe, so every call into it holds LOCK.
+- text_layer: the PDF's text layer, as the baseline reads it. Short lines that repeat on three or
+  more pages, the running headers such as "Erste Vorlage: Biodiversitätsinitiative", become headings.
+- tags: the PDF's tags. 59 of the 60 booklets are tagged PDFs: their structure tree has the reading
+  order, the headings and the paragraphs, and leaves out running headers and page numbers.
+- docling: the JSON that docling wrote for the PDF (gied_docling/convert.py), found by the PDF's SHA-256.
+
+PDFium is not thread-safe: read one PDF at a time.
 """
 
 import ctypes
 import hashlib
 import json
 import re
-import threading
 from collections import Counter
-from dataclasses import dataclass
+from itertools import groupby
 from pathlib import Path
 
 import pypdfium2 as pdfium
 import pypdfium2.raw as raw
 
-READERS = ("pdfium", "tags", "docling")
-LOCK = threading.Lock()
-HEADER_CHARS, HEADER_PAGES = 100, 3  # a running header is a short line that repeats on several pages
+Block = tuple[int, int, str]  # (page, level, text): level 1 to 6 for a heading, 0 for body text
 
-# Structure elements that hold one block of text, and what kind of block it is
-BLOCKS = {"P": "text", "LI": "text", "LBody": "text", "BlockQuote": "text", "Caption": "text", "TR": "text",
-          "Note": "footnote", "H": "heading", **{f"H{n}": "heading" for n in range(1, 7)}}
-SKIPPED = {"TOC", "TOCI", "Figure", "Artifact"}  # the table of contents repeats headings; figures have no text
-INLINE = {"Span", "Link", "Reference", "Quote", "Em", "Strong", "Sub", "Sup", "Code", "BibEntry", "Annot", "Lbl"}
-GROUPS = {"Document", "Part", "Art", "Sect", "Div", "NonStruct", "Private", "Table", "THead", "TBody", "TFoot",
-          "L", "Form", "Index"}
+HEADINGS = {"H": 1, "H1": 1, "H2": 2, "H3": 3, "H4": 4, "H5": 5, "H6": 6}  # tag → heading level
+BODY = {"P", "LI", "TR", "Note", "Caption", "BlockQuote"}  # tags whose text is one block of body text
+LEFT_OUT = {"TOC", "Figure", "Artifact"}  # the table of contents repeats the headings; figures have no text
+INLINE = {"Span", "Link", "Reference", "Lbl", "Quote", "Em", "Strong", "Sub", "Sup"}  # run on with the text around
 
-# docling's labels, and what kind of block they are; page headers and footers are left out
-DOCLING = {"title": "heading", "section_header": "heading", "text": "text", "paragraph": "text",
-           "list_item": "text", "caption": "text", "footnote": "footnote", "table": "text"}
+DOCLING = {"title", "section_header", "text", "paragraph", "list_item", "caption", "footnote", "table"}
 
 
-@dataclass(frozen=True)
-class Block:
-    kind: str  # heading, text or footnote
-    text: str  # plain text as printed, without markup
-    level: int = 0  # headings: 1 for H1 to 6 for H6
-
-
-def plain(text: str) -> str:
-    """Text as it reads: without soft hyphens, control characters (the booklets' arrows come out as
-    \\x08) or line breaks, the spaces collapsed."""
-    text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f\u00ad\ufffe]", "", text)
-    return " ".join(text.split())
-
-
-def read(path: Path, source: str, converted: Path | None = None) -> list[list[Block]]:
-    """The booklet as `source` reads it. docling falls back to tags, and tags to pdfium, when they have nothing."""
-    if source not in READERS:
-        raise ValueError(f"unknown reader {source!r}, use one of: {', '.join(READERS)}")
-    if source == "docling" and converted and (pages := docling(path, converted)) is not None:
-        return pages
-    if source in ("docling", "tags") and (pages := tags(path)) is not None:
-        return pages
+def read(path: Path, source: str, converted: Path) -> list[Block]:
+    """The booklet's blocks as `source` reads them: pdfium (the text layer), tags or docling. Without
+    docling's JSON, docling falls back to the tags, and an untagged PDF to the text layer."""
+    if source not in ("pdfium", "tags", "docling"):
+        raise ValueError(f"unknown source {source!r}: use pdfium, tags or docling")
+    if source == "docling" and (blocks := docling(path, converted)):
+        return blocks
+    if source in ("docling", "tags") and (blocks := tags(path)):
+        return blocks
     return text_layer(path)
 
 
-def text_layer(path: Path) -> list[list[Block]]:
-    """The PDF's text layer, page by page. Lines that repeat on three or more pages are running headers:
-    they become headings, which name the section of the text after them."""
-    with LOCK:
-        pdf = pdfium.PdfDocument(path)
-        try:
-            texts = [page.get_textpage().get_text_range() for page in pdf]
-        finally:
-            pdf.close()
-    pages = [[line for line in map(plain, text.split("\r\n")) if line and not line.isdigit()] for text in texts]
-    headers = Counter(header for lines in pages for header in {header_of(line) for line in lines if is_short(line)})
-    repeated = {header for header, count in headers.items() if count >= HEADER_PAGES}
-    return [page_blocks(lines, repeated) for lines in pages]
+def plain(text: str) -> str:
+    """Text as it reads: no soft hyphens, no control characters (the booklets' arrows come out as \\x08),
+    and single spaces instead of line breaks."""
+    return " ".join(re.sub(r"[\x00-\x08\x0b-\x1f\x7f­￾]", "", text).split())
 
 
-def is_short(line: str) -> bool:
-    return len(line) < HEADER_CHARS
+# The text layer
 
-
-def header_of(line: str) -> str:
-    """A line with its numbers replaced, so that the running headers of pages 8 and 9 are the same."""
-    return re.sub(r"\d+", "#", line).strip()
-
-
-def page_blocks(lines: list[str], repeated: set[str]) -> list[Block]:
-    """A page's lines as blocks: each running header a heading, the lines between them one text block."""
-    blocks, text = [], []
-    for line in lines:
-        if is_short(line) and header_of(line) in repeated:
-            if text:
-                blocks.append(Block("text", " ".join(text)))
-                text = []
-            blocks.append(Block("heading", header_of(line).lstrip("# ").strip(), 2))
-        else:
-            text.append(line)
-    if text:
-        blocks.append(Block("text", " ".join(text)))
-    return [block for block in blocks if block.text]
-
-
-def tags(path: Path) -> list[list[Block]] | None:
-    """The blocks of the PDF's structure tree, page by page, or None if the PDF is not tagged.
-
-    Some pages have text that is not in the tree: the voting text ("Abstimmungstext") is placed as it
-    was published, untagged. Such a page keeps the headings of its tags and takes its text from the
-    text layer."""
-    with LOCK:
-        pdf = pdfium.PdfDocument(path)
-        try:
-            pages = [page_tags(page) for page in pdf]
-        finally:
-            pdf.close()
-    booklet = [blocks for blocks, _ in pages]
-    if not any(booklet):
-        return None
-    if untagged := [n for n, (_, gap) in enumerate(pages) if gap]:
-        text = text_layer(path)
-        for n in untagged:
-            booklet[n] = [b for b in booklet[n] if b.kind == "heading"] + [b for b in text[n] if b.kind != "heading"]
-    return booklet
-
-
-def page_tags(page: pdfium.PdfPage) -> tuple[list[Block], bool]:
-    """The page's blocks from the structure tree, and whether much of its text is not in the tree."""
-    textpage = page.get_textpage()
-    texts: dict[int, str] = {}  # the text of each marked-content ID on the page
-    tagged = untagged = 0  # characters of text in the tree and outside it (running headers, untagged text)
-    for obj, mcid in objects(page.raw, raw.FPDFPage_CountObjects, raw.FPDFPage_GetObject, -1):
-        if raw.FPDFPageObj_GetType(obj) != raw.FPDF_PAGEOBJ_TEXT:
-            continue
-        if mcid >= 0:
-            text = utf16(raw.FPDFTextObj_GetText, obj, textpage.raw) or ""
-            texts[mcid] = texts.get(mcid, "") + text
-            tagged += len(text)
-        else:
-            untagged += max(0, raw.FPDFTextObj_GetText(obj, textpage.raw, None, 0) // 2 - 1)
-    blocks: list[Block] = []
-    tree = raw.FPDF_StructTree_GetForPage(page.raw)
+def text_layer(path: Path) -> list[Block]:
+    """The PDF's text layer. On each page, a running header becomes a heading, and the lines between
+    the headings one block of body text. Page numbers are left out."""
+    pdf = pdfium.PdfDocument(path)
     try:
-        for i in range(raw.FPDF_StructTree_CountChildren(tree)):
-            collect(raw.FPDF_StructTree_GetChildAtIndex(tree, i), texts, blocks)
+        pages = [page.get_textpage().get_text_range().split("\r\n") for page in pdf]
     finally:
-        raw.FPDF_StructTree_Close(tree)
-    return blocks, untagged > 300 and untagged > 0.2 * (tagged + untagged)
+        pdf.close()
+    pages = [[line for line in map(plain, lines) if line and not line.isdigit()] for lines in pages]
+    headers = running_headers(pages)
+    blocks = []
+    for page, lines in enumerate(pages, 1):
+        for is_header, group in groupby(lines, key=lambda line: shape(line) in headers):
+            if is_header:
+                blocks += [(page, 2, re.sub(r"^\d+\s+|\s+\d+$", "", line)) for line in group]
+            else:
+                blocks.append((page, 0, " ".join(group)))
+    return blocks
 
 
-def objects(container, count, get, mcid: int):
-    """The page objects with their marked-content ID, also those inside form XObjects."""
+def running_headers(pages: list[list[str]]) -> set[str]:
+    """The short lines that are on three or more pages, page numbers aside."""
+    count = Counter(shape(line) for lines in pages for line in set(lines) if len(line) < 100)
+    return {line for line, pages in count.items() if pages >= 3}
+
+
+def shape(line: str) -> str:
+    """A line with its numbers replaced, so that the running headers of page 8 and page 9 are the same."""
+    return re.sub(r"\d+", "#", line)
+
+
+# The tags
+
+def tags(path: Path) -> list[Block] | None:
+    """The blocks of the PDF's tags, or None if it has none.
+
+    The voting text ("Abstimmungstext") is placed untagged, as it was published. A page with much
+    text outside the tags keeps the headings from its tags and takes its body text from the text layer.
+    """
+    blocks, untagged_pages = [], set()
+    pdf = pdfium.PdfDocument(path)
+    try:
+        for page_number, page in enumerate(pdf, 1):
+            texts, untagged = marked_content(page)
+            blocks += [(page_number, level, text) for level, text in structure(page, texts)]
+            if untagged:
+                untagged_pages.add(page_number)
+    finally:
+        pdf.close()
+    if not blocks:
+        return None
+    if untagged_pages:
+        body = [block for block in text_layer(path) if block[0] in untagged_pages and block[1] == 0]
+        blocks = [block for block in blocks if block[0] not in untagged_pages or block[1] > 0] + body
+        blocks.sort(key=lambda block: block[0])  # back into page order; within a page the order stays
+    return blocks
+
+
+def marked_content(page: pdfium.PdfPage) -> tuple[dict[int, str], bool]:
+    """The text of each marked-content ID on the page, which the tags refer to, and whether much of the
+    page's text has no ID, so is not in the tags. Running headers have none either, but they are short."""
+    textpage = page.get_textpage()
+    texts: dict[int, str] = {}
+    untagged = 0
+    for obj, mcid in text_objects(page.raw, raw.FPDFPage_CountObjects, raw.FPDFPage_GetObject, -1):
+        text = utf16(raw.FPDFTextObj_GetText, obj, textpage.raw) or ""
+        if mcid >= 0:
+            texts[mcid] = texts.get(mcid, "") + text
+        else:
+            untagged += len(text)
+    tagged = sum(map(len, texts.values()))
+    return texts, untagged > 300 and untagged > 0.2 * (tagged + untagged)
+
+
+def text_objects(container, count, get, mcid: int) -> list[tuple]:
+    """The text objects of a page with their marked-content ID, also those inside form XObjects, which
+    take the ID of their form if they have none of their own."""
+    found = []
     for i in range(count(container)):
         obj = get(container, i)
         own = raw.FPDFPageObj_GetMarkedContentID(obj)
-        yield obj, own if own >= 0 else mcid
-        if raw.FPDFPageObj_GetType(obj) == raw.FPDF_PAGEOBJ_FORM:
-            yield from objects(obj, raw.FPDFFormObj_CountObjects, raw.FPDFFormObj_GetObject, own if own >= 0 else mcid)
+        if raw.FPDFPageObj_GetType(obj) == raw.FPDF_PAGEOBJ_TEXT:
+            found.append((obj, own if own >= 0 else mcid))
+        elif raw.FPDFPageObj_GetType(obj) == raw.FPDF_PAGEOBJ_FORM:
+            found += text_objects(obj, raw.FPDFFormObj_CountObjects, raw.FPDFFormObj_GetObject, own if own >= 0 else mcid)
+    return found
 
 
-def collect(element, texts: dict[int, str], blocks: list[Block]) -> None:
-    """Add the blocks of a structure element and its descendants, in reading order."""
-    kind = utf16(raw.FPDF_StructElement_GetType, element) or ""
-    if kind in SKIPPED:
-        return
-    children = [raw.FPDF_StructElement_GetChildAtIndex(element, i)
-                for i in range(max(0, raw.FPDF_StructElement_CountChildren(element)))]
-    if kind not in BLOCKS and kind not in INLINE and kind not in GROUPS and not all(children):
-        kind = "P"  # a tag of the PDF's own, not mapped to a standard one, that holds text: a paragraph
-    if kind in BLOCKS:
-        text = plain(content(element, texts))
-        if text:
-            level = int(kind[1]) if BLOCKS[kind] == "heading" and kind[1:].isdigit() else 0
-            blocks.append(Block(BLOCKS[kind], text, level or (1 if BLOCKS[kind] == "heading" else 0)))
-        return
-    for child in children:
-        if child:
-            collect(child, texts, blocks)
+def structure(page: pdfium.PdfPage, texts: dict[int, str]) -> list[tuple[int, str]]:
+    """The headings and paragraphs in the page's tags, in reading order, as (level, text)."""
+    found = []
+
+    def visit(element) -> None:
+        tag = utf16(raw.FPDF_StructElement_GetType, element) or ""
+        kids = children(element)
+        if tag in LEFT_OUT:
+            return
+        if tag in HEADINGS or tag in BODY or (tag not in INLINE and kids and not any(kids)):
+            # a heading, a paragraph, or a tag of another kind that holds only text
+            if text := plain(text_of(element, texts)):
+                found.append((HEADINGS.get(tag, 0), text))
+            return
+        for kid in kids:
+            if kid:
+                visit(kid)
+
+    tree = raw.FPDF_StructTree_GetForPage(page.raw)
+    try:
+        for i in range(raw.FPDF_StructTree_CountChildren(tree)):
+            visit(raw.FPDF_StructTree_GetChildAtIndex(tree, i))
+    finally:
+        raw.FPDF_StructTree_Close(tree)
+    return found
 
 
-def content(element, texts: dict[int, str]) -> str:
-    """The text of a structure element: its ActualText if it has one (a hyphen at a line break has a
-    soft hyphen there), else the text of its marked content and children, in order."""
+def text_of(element, texts: dict[int, str]) -> str:
+    """The text of a tag: its ActualText if it has one (a hyphen at a line break has a soft hyphen as
+    ActualText), else the text of what it contains, in order. Inline tags, such as spans and links,
+    run on with the text around them; other tags, such as table cells, are set apart by a space."""
     actual = utf16(raw.FPDF_StructElement_GetActualText, element)
     if actual is not None:
         return actual
     parts = []
-    for i in range(max(0, raw.FPDF_StructElement_CountChildren(element))):
-        child = raw.FPDF_StructElement_GetChildAtIndex(element, i)
-        if child:
-            inline = (utf16(raw.FPDF_StructElement_GetType, child) or "") in INLINE
-            parts.append(content(child, texts) if inline else f" {content(child, texts)} ")
-        else:
+    for i, kid in enumerate(children(element)):
+        if kid is None:  # marked content on the page
             parts.append(texts.get(raw.FPDF_StructElement_GetChildMarkedContentID(element, i), ""))
+        elif (utf16(raw.FPDF_StructElement_GetType, kid) or "") in INLINE:
+            parts.append(text_of(kid, texts))
+        else:
+            parts.append(f" {text_of(kid, texts)} ")
     return "".join(parts)
+
+
+def children(element) -> list:
+    """A tag's children: a tag, or None where the child is marked content on the page."""
+    count = max(0, raw.FPDF_StructElement_CountChildren(element))
+    return [raw.FPDF_StructElement_GetChildAtIndex(element, i) or None for i in range(count)]
 
 
 def utf16(function, *args) -> str | None:
@@ -209,41 +202,46 @@ def utf16(function, *args) -> str | None:
     return ctypes.string_at(buffer, max(0, size - 2)).decode("utf-16-le", "replace")
 
 
-def docling(path: Path, converted: Path) -> list[list[Block]] | None:
-    """The blocks docling found, from converted/<sha256 of the PDF>.json, or None if it is not there."""
+# docling
+
+def docling(path: Path, converted: Path) -> list[Block] | None:
+    """The blocks in docling's JSON for the PDF, converted/<SHA-256 of the PDF>.json, in docling's
+    reading order; None if it is not there. Page headers and footers are not in docling's body."""
     file = converted / f"{sha256(path)}.json"
     if not file.exists():
         return None
     document = json.loads(file.read_text(encoding="utf-8"))
-    booklet: list[list[Block]] = [[] for _ in range(len(document.get("pages", {})) or 1)]
+    blocks = []
 
-    def item(ref: str) -> dict:
+    def visit(ref: str) -> None:
         _, collection, index = ref.split("/")  # "#/texts/12"
-        return document[collection][int(index)]
-
-    def visit(node: dict) -> None:
-        label = node.get("label", "")
-        if node.get("content_layer", "body") == "body" and label in DOCLING and node.get("prov"):
-            text = table_text(node) if label == "table" else node.get("text", "")
-            text = plain(text)
-            page = node["prov"][0]["page_no"]
-            while len(booklet) < page:
-                booklet.append([])
+        item = document[collection][int(index)]
+        label = item.get("label")
+        if label in DOCLING and item.get("prov"):
+            text = plain(table_text(item) if label == "table" else item.get("text", ""))
             if text:
-                level = node.get("level", 1) if DOCLING[label] == "heading" else 0
-                booklet[page - 1].append(Block(DOCLING[label], text, level))
-        for child in node.get("children", []):
-            visit(item(child["$ref"]))
+                level = item.get("level", 1) if label in ("title", "section_header") else 0
+                blocks.append((item["prov"][0]["page_no"], level, text))
+        for child in item.get("children", []):
+            visit(child["$ref"])
 
-    for child in document["body"].get("children", []):
-        visit(item(child["$ref"]))
-    return booklet
+    for child in document["body"]["children"]:
+        visit(child["$ref"])
+    return blocks
 
 
 def table_text(table: dict) -> str:
     """A table as text: its rows one after the other, the cells of a row separated by spaces."""
     grid = table.get("data", {}).get("grid", [])
     return " ".join(" ".join(cell.get("text", "") for cell in row) for row in grid)
+
+
+def page_count(path: Path) -> int:
+    pdf = pdfium.PdfDocument(path)
+    try:
+        return len(pdf)
+    finally:
+        pdf.close()
 
 
 def sha256(path: Path) -> str:

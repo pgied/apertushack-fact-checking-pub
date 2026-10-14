@@ -1,12 +1,6 @@
-"""Tests for sentences, BM25 and the mapping between editions in src/strategies/_gied/index.py."""
+"""Tests for sentences, search and editions in src/strategies/_gied/index.py."""
 
-import threading
-import time
-
-import pytest
-
-from src.strategies._gied.index import Booklet, Lazy, split, terms
-from src.strategies._gied.pdf import Block
+from src.strategies._gied.index import Booklet, Sentence, sentences, split, terms
 
 
 def test_sentences_end_at_full_stops_but_not_after_abbreviations_or_numbers():
@@ -20,60 +14,52 @@ def test_sentences_end_at_full_stops_but_not_after_abbreviations_or_numbers():
     ]
 
 
-def test_short_sentences_join_the_next_and_long_ones_are_split():
+def test_a_short_sentence_is_joined_to_the_next_or_the_one_before():
     assert split("Nein. Der Bundesrat empfiehlt, die Initiative abzulehnen.") == [
         "Nein. Der Bundesrat empfiehlt, die Initiative abzulehnen."]
-    long = "; ".join(f"Teil {n} der langen Aufzählung mit vielen Wörtern" for n in range(20)) + "."
-    pieces = split(long)
-    assert len(pieces) > 1 and all(len(piece) <= 600 for piece in pieces)
-    assert " ".join(pieces) == long
+    assert split("Der Bundesrat empfiehlt, die Initiative abzulehnen. Nein.") == [
+        "Der Bundesrat empfiehlt, die Initiative abzulehnen. Nein."]
 
 
 def test_terms_are_folded_and_cut():
     assert terms("Lebensräume, Énergies 6,8 % ß") == ["lebensr", "energie", "6", "8", "ss"]
 
 
-def edition(*pages: list[str]) -> Booklet:
-    return Booklet([[Block("heading", "Im Detail", 2)] + [Block("text", text) for text in page] for page in pages])
+def test_a_sentence_knows_its_page_and_the_two_headings_above_it():
+    blocks = [(1, 2, "Im Detail"), (1, 3, "Biodiversitätsinitiative"), (1, 4, "Ausgangslage"),
+              (1, 0, "Die Biodiversität ist in der Schweiz zurückgegangen."), (2, 3, "Argumente"),
+              (2, 0, "Der Bund investiert jährlich 600 Millionen Franken.")]
+    assert sentences(blocks) == [
+        Sentence(1, "Biodiversitätsinitiative › Ausgangslage", "Die Biodiversität ist in der Schweiz zurückgegangen."),
+        Sentence(2, "Im Detail › Argumente", "Der Bund investiert jährlich 600 Millionen Franken."),
+    ]
 
 
-def test_bm25_finds_the_sentence_about_the_claim():
-    booklet = edition(["Die Biodiversität ist zurückgegangen. Der Bund investiert jährlich 600 Millionen Franken."],
-                      ["Die Reform senkt den Umwandlungssatz von 6,8 auf 6 Prozent. Das betrifft viele Versicherte."])
-    best = booklet.top(booklet.scores("Der Umwandlungssatz sinkt auf 6 Prozent"), 1)
-    assert booklet.sentences[best[0]].text.startswith("Die Reform senkt")
-    assert booklet.sentences[best[0]].page == 2 and booklet.sentences[best[0]].section == "Im Detail"
-    assert booklet.top(booklet.scores("Kernkraftwerke"), 3) == []  # no word in common, no hit
+def booklet(*pages: str) -> Booklet:
+    """A booklet with one block of body text per page."""
+    return Booklet([(page, 0, text) for page, text in enumerate(pages, 1)], len(pages))
 
 
-def test_a_sentence_maps_to_the_same_place_in_the_other_edition():
-    german = edition(["Erster Satz auf der ersten Seite des Büchleins. Zweiter Satz auf der ersten Seite."],
-                     ["Ein Absatz auf Seite zwei mit genug Text.", "Noch ein Absatz auf Seite zwei mit Text."])
-    french = edition(["Première phrase de la première page de la brochure. Deuxième phrase de la première page."],
-                     ["Un paragraphe de la page deux avec assez de texte.", "Un autre paragraphe de la page deux."])
-    for i, sentence in enumerate(french.sentences):
-        mapped = german.sentences[german.map(french, i)]
-        assert (mapped.page, mapped.block, mapped.order) == (sentence.page, sentence.block, sentence.order)
+def test_search_finds_the_sentence_about_the_claim():
+    found = booklet("Die Biodiversität ist zurückgegangen. Der Bund investiert jährlich 600 Millionen Franken.",
+                    "Die Reform senkt den Umwandlungssatz von 6,8 auf 6 Prozent. Das betrifft viele Versicherte.")
+    best = found.search("Der Umwandlungssatz sinkt auf 6 Prozent", 1)
+    assert [(s.page, s.text[:16]) for s in best] == [(2, "Die Reform senkt")]
+    assert found.search("Kernkraftwerke", 3) == []  # no word in common, nothing found
 
 
-def test_lazy_makes_each_value_once_and_shares_its_exceptions():
-    made = []
+def test_a_sentence_has_its_counterpart_at_the_same_place_in_the_other_edition():
+    german = booklet("Erster Satz auf der ersten Seite des Büchleins. Zweiter Satz auf der ersten Seite des Büchleins.",
+                     "Ein Absatz auf Seite zwei mit genug Text, um ein Satz zu sein.")
+    french = booklet("Première phrase de la première page de la brochure. Deuxième phrase de la première page de la brochure.",
+                     "Un paragraphe de la page deux avec assez de texte pour une phrase.")
+    assert [german.same_place(sentence, french).text[:12] for sentence in french.sentences] == [
+        "Erster Satz ", "Zweiter Satz", "Ein Absatz a"]
 
-    def make(key):
-        time.sleep(0.05)
-        made.append(key)
-        if key == "broken":
-            raise ValueError(key)
-        return key.upper()
 
-    lazy = Lazy(make)
-    threads = [threading.Thread(target=lazy.get, args=("a",)) for _ in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-    assert lazy.get("a") == "A" and made == ["a"]
-    for _ in range(2):
-        with pytest.raises(ValueError):
-            lazy.get("broken")
-    assert made == ["a", "broken"]
+def test_around_a_sentence_are_its_neighbours_on_the_same_page():
+    found = booklet("Erster Satz auf der ersten Seite des Büchleins. Zweiter Satz auf der ersten Seite des Büchleins.",
+                    "Der erste Satz auf der zweiten Seite steht hier. Und der zweite Satz auf der zweiten Seite.")
+    second, third = found.sentences[1], found.sentences[2]
+    assert found.around(second) == found.sentences[:2]  # the next sentence is on another page
+    assert found.around(third) == found.sentences[2:]

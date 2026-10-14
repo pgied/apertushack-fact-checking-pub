@@ -22,8 +22,9 @@ import re
 import sys
 from dataclasses import dataclass
 
+from src.llm import LLM
 from src.nli import LABELS, parse_label
-from src.strategies import LLM, Strategy, Verdict
+from src.strategy import Strategy, Verdict
 from src.strategies.baseline.strategy import Baseline
 
 NEUTRAL = LABELS.index("neutral")

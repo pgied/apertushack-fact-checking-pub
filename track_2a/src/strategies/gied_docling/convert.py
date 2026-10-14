@@ -99,12 +99,13 @@ def report(booklets: Path, out: Path) -> None:
         path = booklets / name
         for reader in totals:
             begin = time.perf_counter()
-            pages = readers.read(path, reader, out)
+            blocks = readers.read(path, reader, out)
             seconds = entry["seconds"] if reader == "docling" else time.perf_counter() - begin
-            texts = [" ".join(block.text for block in page) for page in pages]
+            pages = readers.page_count(path)
+            texts = [" ".join(text for page, _, text in blocks if page == n) for n in range(1, pages + 1)]
             shares = [dataset.locate(reference, texts)[1] for reference in references.get(name, ())]
             totals[reader][0] += seconds
-            totals[reader][1] += len(pages)
+            totals[reader][1] += pages
             totals[reader][2] += shares
     lines.append(f"{'reader':<8} {'s/page':>8} {'fidelity mean':>14} {'min':>6} {'≥ 90 %':>7}")
     for reader, (seconds, pages, shares) in totals.items():

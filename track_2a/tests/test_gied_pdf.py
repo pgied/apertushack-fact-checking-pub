@@ -1,5 +1,6 @@
 """Tests for the readers in src/strategies/_gied/pdf.py, on the booklet in data/examples/."""
 
+import json
 from pathlib import Path
 
 import pypdfium2 as pdfium
@@ -10,29 +11,28 @@ BOOKLET = Path(__file__).resolve().parent.parent / "data" / "examples" / "bookle
 
 
 def test_tags_give_headings_and_paragraphs_in_reading_order():
-    pages = pdf.tags(BOOKLET)
-    assert len(pages) == 32
-    page4 = pages[3]
-    assert [(b.kind, b.level, b.text) for b in page4[1:3]] == [("heading", 2, "En bref"), ("heading", 3, "Contexte")]
-    assert page4[3].kind == "text" and page4[3].text.startswith("On attend des entreprises suisses")
-    assert not any("­" in b.text or "￾" in b.text for page in pages for b in page)
+    blocks = pdf.tags(BOOKLET)
+    page4 = [block for block in blocks if block[0] == 4]
+    assert page4[1:3] == [(4, 2, "En bref"), (4, 3, "Contexte")]
+    assert page4[3][1] == 0 and page4[3][2].startswith("On attend des entreprises suisses")
+    assert not any("­" in text or "￾" in text for _, _, text in blocks)
 
 
 def test_the_text_layer_drops_page_numbers_and_makes_running_headers_headings():
-    pages = pdf.text_layer(BOOKLET)
-    assert len(pages) == 32
-    assert not any(b.text.isdigit() for page in pages for b in page)
-    assert any(b.kind == "heading" for page in pages for b in page)
+    blocks = pdf.text_layer(BOOKLET)
+    assert {page for page, _, _ in blocks} <= set(range(1, 33))
+    assert not any(text.isdigit() for _, _, text in blocks)
+    assert any(level for _, level, _ in blocks)
 
 
-def test_an_untagged_pdf_has_no_tags_and_is_read_from_its_text_layer(tmp_path):
+def test_an_untagged_pdf_is_read_from_its_text_layer(tmp_path):
     untagged = tmp_path / "untagged.pdf"
     copy = pdfium.PdfDocument.new()
     copy.import_pages(pdfium.PdfDocument(BOOKLET), [3, 4])  # the pages come without the structure tree
     copy.save(untagged)
 
     assert pdf.tags(untagged) is None
-    assert pdf.read(untagged, "tags") == pdf.text_layer(untagged)
+    assert pdf.read(untagged, "tags", tmp_path) == pdf.text_layer(untagged)
 
 
 def test_docling_without_its_json_falls_back_to_tags(tmp_path):
@@ -50,9 +50,7 @@ def test_docling_json_is_read_in_its_reading_order(tmp_path):
         ],
         "tables": [{"label": "table", "prov": [{"page_no": 2}],
                     "data": {"grid": [[{"text": "Oui"}, {"text": "Non"}], [{"text": "12"}, {"text": "34"}]]}}],
-        "pages": {"1": {}, "2": {}},
     }
-    (tmp_path / f"{pdf.sha256(BOOKLET)}.json").write_text(__import__("json").dumps(document))
-    pages = pdf.read(BOOKLET, "docling", tmp_path)
-    assert pages == [[pdf.Block("heading", "En bref", 1)],
-                     [pdf.Block("text", "Les entreprises respectent les droits."), pdf.Block("text", "Oui Non 12 34")]]
+    (tmp_path / f"{pdf.sha256(BOOKLET)}.json").write_text(json.dumps(document))
+    assert pdf.read(BOOKLET, "docling", tmp_path) == [
+        (1, 1, "En bref"), (2, 0, "Les entreprises respectent les droits."), (2, 0, "Oui Non 12 34")]

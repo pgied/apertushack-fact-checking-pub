@@ -66,9 +66,6 @@ def test_a_cross_lingual_claim_without_its_edition_is_translated_first():
     assert client.requests[0]["messages"][0]["content"].startswith("Translate this claim into French.")
     assert ADVANCED["claim"]["text"] in client.requests[0]["messages"][0]["content"]
 
-    _, client = decide(GiedTags, ADVANCED, "contradiction 1", translate=False)
-    assert len(client.requests) == 1
-
 
 def test_a_cross_lingual_claim_is_searched_in_the_edition_in_its_language(tmp_path):
     (tmp_path / "booklets").mkdir()
@@ -83,16 +80,14 @@ def test_a_cross_lingual_claim_is_searched_in_the_edition_in_its_language(tmp_pa
     assert prediction["evidence"] and all(item["page"] for item in prediction["evidence"])
 
 
-def test_a_neutral_answer_keeps_its_evidence_unless_told_not_to():
+def test_a_neutral_answer_keeps_its_evidence():
     prediction, _ = decide(GiedTags, ADVANCED, "neutral")
     assert prediction["label_name"] == "neutral" and prediction["evidence"]
-    prediction, _ = decide(GiedTags, ADVANCED, "neutral", neutral_evidence=False)
-    assert prediction["evidence"] == []
 
 
 def test_the_cases_are_decided_alike_in_any_order():
     client = Client("entailment 2")
-    strategy = GiedTags(GiedTags.Settings(name="gied_tags", translate=False), "advanced", {}, cases_dir=EXAMPLES)
+    strategy = GiedTags(GiedTags.Settings(name="gied_tags"), "advanced", {}, cases_dir=EXAMPLES)
     cases = [ADVANCED, SUMMARY]
 
     def run(order):
@@ -107,11 +102,3 @@ def test_the_beginner_task_is_the_baselines():
     prediction, client = decide(GiedTags, beginner, "contradiction")
     assert prediction["evidence"] == [{"page": None, "text": beginner["reference"]["text"]}]
     assert len(client.requests) == 1
-
-
-def test_without_a_folder_the_pages_that_start_read_are_used():
-    path = ADVANCED["booklet"]["path"]
-    pages = pdf.pages(EXAMPLES / path)
-    strategy = GiedTags(GiedTags.Settings(name="gied_tags", translate=False), "advanced", {path: pages})
-    prediction = strategy.answer(ADVANCED, LLM(Client("contradiction 1"), "m", {}))
-    assert prediction["evidence"] and all(1 <= item["page"] <= len(pages) for item in prediction["evidence"])

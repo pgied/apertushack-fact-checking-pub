@@ -1,37 +1,36 @@
-"""Retrieve, then verify: the strategy that gied_pdfium, gied_tags and gied_docling share; they differ
-only in how they read the booklet (`source`, see pdf.py).
+"""Retrieve, then verify: the strategy that gied_pdfium, gied_tags and gied_docling share. They differ
+only in how they read the booklet, the setting `source` (see pdf.py).
 
-Advanced task:
-1. The booklet is read and split into sentences, indexed with BM25, the first time a case needs it,
-   while other cases' requests are in flight (Lazy, in index.py).
-2. A claim in another language than the booklet is searched in the booklet's edition in the claim's
-   language, from the same folder, and what is found there is mapped to the same places in the
-   booklet. Without that edition, Apertus translates the claim first.
-3. The best sentences, with their neighbours, make up the numbered excerpts that Apertus sees, about
-   `context_chars` characters, each with its page and section.
-4. Apertus answers with the label and the numbers of the excerpts it based it on. The evidence is up
-   to five sentences of the booklet, those of the cited excerpts first. It is returned for a neutral
-   answer too: the challenge scores the evidence of every case that is entailment or contradiction.
+Advanced task, for each case:
+1. Read the booklet and index its sentences, the first time a case needs it (Booklet, in index.py).
+2. Find the sentences that bear on the claim. A claim in another language than the booklet is
+   searched in the booklet's edition in the claim's language, which has the same pages, and each
+   sentence found there is swapped for the one at the same place in the booklet. Without that
+   edition, Apertus translates the claim first.
+3. Ask Apertus, with each sentence found and its neighbours as a numbered excerpt, about
+   `context_chars` characters in all. It answers with the label and the excerpts it is based on,
+   for example "contradiction 2 1".
+4. The evidence is five sentences of the booklet, those of the cited excerpts first. It is returned
+   for a neutral answer too: the challenge scores the evidence of every case whose gold label is
+   entailment or contradiction, whatever we answer.
 
 Beginner task: the baseline's single request, unchanged.
 """
 
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 from src.llm import LLM
-from src.nli import LABELS
-from src.strategy import Verdict
-from src.strategies._gied import timing
-from src.strategies._gied.index import MIN_CHARS, Booklet, Lazy, terms
-from src.strategies._gied.pdf import Block, read
+from src.strategies._gied.index import MIN_CHARS, Booklet, Sentence, terms
+from src.strategies._gied.pdf import page_count, read
 from src.strategies.baseline.strategy import Baseline, read_label
+from src.strategy import Verdict
 
-NEUTRAL = LABELS.index("neutral")
-LANGUAGES = {"de": "German", "fr": "French", "it": "Italian"}
 ROOT = Path(__file__).resolve().parents[3]  # track_2a/: relative paths in the settings start here
-MAX_QUOTE = 5000  # characters: longer evidence items do not count
+LANGUAGES = {"de": "German", "fr": "French", "it": "Italian"}
+EVIDENCE = 5  # sentences: the challenge scores the first five evidence items
 
 SYSTEM_PROMPT = """You check claims against an official Swiss voting booklet.
 You get numbered EXCERPTS of the booklet, the VOTE that the claim is about, and a CLAIM. The claim may
@@ -52,122 +51,88 @@ class Retrieve(Baseline):
     @dataclass
     class Settings(Baseline.Settings):
         max_tokens: int = 12  # the label and a few excerpt numbers
-        source: str = "tags"  # how the booklet is read: pdfium, tags or docling
-        converted: str = "data/converted/docling"  # docling's JSON of the booklets, by the PDF's SHA-256
+        source: str = "tags"  # how the booklet is read: pdfium (the text layer), tags or docling
+        converted: str = "data/converted/docling"  # where docling's JSON is, for source=docling
         pivot: bool = True  # search a cross-lingual claim in the booklet's edition in the claim's language
-        translate: bool = True  # without that edition, let Apertus translate the claim first
-        hits: int = 8  # the best sentences, around which the excerpts are cut
-        window: int = 1  # sentences before and after each one
-        context_chars: int = 2000  # about how much text the excerpts have together
-        evidence: int = 5  # sentences returned as evidence: the challenge scores the first five
-        neutral_evidence: bool = True  # return evidence for a neutral answer too
+        hits: int = 8  # sentences found, around which the excerpts are cut
+        context_chars: int = 2000  # about how much text the excerpts have in all
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.prepared = Lazy(self.prepare)  # booklet path → its Booklet, made on first use
+        self.read_booklets: dict[str, Booklet] = {}  # path → booklet, read once
+        self.reading = threading.Lock()  # one booklet at a time: PDFium is not thread-safe
 
-    def predict(self, case: dict, llm: LLM) -> Verdict:
-        llm = timing.Timed(llm)
-        if self.task == "beginner":
-            return self.check_reference(case, llm)
-        return self.check_booklet(case, llm)
+    def booklet(self, path: str) -> Booklet:
+        """The booklet at `path`, relative to the cases' folder, read the first time a case needs it."""
+        with self.reading:
+            if path not in self.read_booklets:
+                file = self.cases_dir / path
+                blocks = read(file, self.settings.source, ROOT / self.settings.converted)
+                self.read_booklets[path] = Booklet(blocks, page_count(file))
+            return self.read_booklets[path]
 
     def check_booklet(self, case: dict, llm: LLM) -> Verdict:
-        booklet = self.prepared.get(case["booklet"]["path"])
-        hits = self.search(case, booklet, llm)
-        excerpts = self.excerpts(booklet, hits)
-        prompt = self.prompt(case, booklet, excerpts)
+        booklet = self.booklet(case["booklet"]["path"])
+        found = self.find(case, booklet, llm)
+        excerpts = self.excerpts(booklet, found)
+        prompt = f"VOTE:\n{case['vote']}\n\nEXCERPTS:\n{numbered(excerpts)}\n\nCLAIM:\n{case['claim']['text']}\n\nAnswer:"
         answer = llm.chat([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}])
-        label = read_label(case, answer)
-        cited = [int(n) - 1 for n in re.findall(r"\d+", answer) if 0 < int(n) <= len(excerpts)]
-        if label == NEUTRAL and not self.settings.neutral_evidence:
-            return Verdict(label)
-        return Verdict(label, self.evidence(booklet, hits, excerpts, cited, case["vote"]))
+        cited = [excerpts[int(n) - 1] for n in re.findall(r"\d+", answer) if 0 < int(n) <= len(excerpts)]
+        return Verdict(read_label(case, answer), evidence(found, cited, case["vote"]))
 
-    def prepare(self, path: str) -> Booklet:
-        """Read the booklet at `path`, relative to the cases' folder, and index its sentences."""
-        if self.cases_dir is not None and (self.cases_dir / path).exists():
-            return Booklet(read(self.cases_dir / path, self.settings.source, ROOT / self.settings.converted))
-        # No folder to read it from, as in tests: the pages that start() read, one block each
-        return Booklet([[Block("text", " ".join(text.split()))] for text in self.booklets[path]])
-
-    def edition(self, path: str, language: str) -> Booklet | None:
-        """The booklet's edition in another language, if it is in the same folder."""
-        other = re.sub(r"_[a-z]{2}\.pdf$", f"_{language}.pdf", path)
-        if other == path or self.cases_dir is None or not (self.cases_dir / other).exists():
-            return None
-        return self.prepared.get(other)
-
-    def search(self, case: dict, booklet: Booklet, llm) -> list[int]:
+    def find(self, case: dict, booklet: Booklet, llm: LLM) -> list[Sentence]:
         """The sentences of the booklet that bear on the claim, best first."""
-        claim, language = case["claim"]["text"], case["claim"]["language"]
-        if language != case["booklet"]["language"]:
-            edition = self.edition(case["booklet"]["path"], language) if self.settings.pivot else None
-            if edition is not None and edition.pages == booklet.pages:
-                found = (booklet.map(edition, i) for i in edition.top(edition.scores(claim), self.settings.hits))
-                return list(dict.fromkeys(i for i in found if i is not None))
-            if self.settings.translate:
-                prompt = TRANSLATE_PROMPT.format(language=LANGUAGES.get(case["booklet"]["language"], "the "
-                                                 "language of the booklet"), claim=claim)
-                claim = llm.chat([{"role": "user", "content": prompt}], max_tokens=200)
-        return booklet.top(booklet.scores(claim), self.settings.hits)
+        path, claim, hits = case["booklet"]["path"], case["claim"]["text"], self.settings.hits
+        if case["claim"]["language"] == case["booklet"]["language"]:
+            return booklet.search(claim, hits)
+        edition_path = re.sub(r"_[a-z]{2}\.pdf$", f"_{case['claim']['language']}.pdf", path)
+        if self.settings.pivot and (self.cases_dir / edition_path).exists():
+            edition = self.booklet(edition_path)
+            if edition.pages == booklet.pages:
+                swapped = [booklet.same_place(sentence, edition) for sentence in edition.search(claim, hits)]
+                return list(dict.fromkeys(sentence for sentence in swapped if sentence))
+        language = LANGUAGES.get(case["booklet"]["language"], "the booklet's language")
+        translated = llm.chat([{"role": "user", "content": TRANSLATE_PROMPT.format(language=language, claim=claim)}],
+                              max_tokens=200)
+        return booklet.search(translated, hits)
 
-    def excerpts(self, booklet: Booklet, hits: list[int]) -> list[list[int]]:
-        """Runs of sentences around the hits, within their block, best hit first; runs that touch are
-        merged. They stop once they have about context_chars characters."""
-        excerpts: list[list[int]] = []
-        used: set[int] = set()
-        chars = 0
-        for i in hits:
-            sentence = booklet.sentences[i]
-            block = booklet.at[sentence.page, sentence.block]
-            at = block.index(i)
-            run = [j for j in block[max(0, at - self.settings.window):at + self.settings.window + 1] if j not in used]
-            if not run:
+    def excerpts(self, booklet: Booklet, found: list[Sentence]) -> list[list[Sentence]]:
+        """For each sentence found, best first: it and its neighbours on the page. A sentence is in one
+        excerpt only, and the excerpts stop at about context_chars characters."""
+        excerpts, used, size = [], set(), 0
+        for sentence in found:
+            excerpt = [s for s in booklet.around(sentence) if s not in used]
+            if not excerpt:
                 continue
-            size = sum(len(booklet.sentences[j].text) for j in run)
-            if excerpts and chars + size > self.settings.context_chars:
+            length = sum(len(s.text) for s in excerpt)
+            if excerpts and size + length > self.settings.context_chars:
                 break
-            for excerpt in excerpts:
-                if excerpt[0] in block and (min(run) == max(excerpt) + 1 or max(run) + 1 == min(excerpt)):
-                    excerpt[:] = sorted(excerpt + run)
-                    break
-            else:
-                excerpts.append(run)
-            used.update(run)
-            chars += size
+            excerpts.append(excerpt)
+            used.update(excerpt)
+            size += length
         return excerpts
 
-    def prompt(self, case: dict, booklet: Booklet, excerpts: list[list[int]]) -> str:
-        parts = []
-        for n, run in enumerate(excerpts, 1):
-            first = booklet.sentences[run[0]]
-            where = f"p. {first.page}" + (f", {first.section[-80:]}" if first.section else "")
-            parts.append(f"[{n}] ({where}) " + " ".join(booklet.sentences[j].text for j in run))
-        text = "\n\n".join(parts) or "(none found)"
-        return f"VOTE:\n{case['vote']}\n\nEXCERPTS:\n{text}\n\nCLAIM:\n{case['claim']['text']}\n\nAnswer:"
 
-    def evidence(self, booklet: Booklet, hits: list[int], excerpts: list[list[int]], cited: list[int],
-                 vote: str) -> list[dict]:
-        """Up to `evidence` sentences, verbatim with their page: the hits in the excerpts that the answer
-        cites first, then the other hits, then the rest of the cited excerpts."""
-        cited_hits = [i for n in cited for i in hits if i in excerpts[n]]
-        cited_rest = [i for n in cited for i in excerpts[n]]
-        title = set(terms(vote))
-        items, seen = [], set()
-        for i in cited_hits + hits + cited_rest:
-            sentence = booklet.sentences[i]
-            if sentence.text in seen or not quotable(sentence.text, title):
-                continue
-            seen.add(sentence.text)
-            items.append({"page": sentence.page, "text": sentence.text[:MAX_QUOTE]})
-            if len(items) == self.settings.evidence:
-                break
-        return items
+def numbered(excerpts: list[list[Sentence]]) -> str:
+    """The excerpts as the model reads them: "[1] (p. 12, In Kürze › Ausgangslage) text"."""
+    lines = []
+    for n, excerpt in enumerate(excerpts, 1):
+        where = f"p. {excerpt[0].page}" + (f", {excerpt[0].section}" if excerpt[0].section else "")
+        lines.append(f"[{n}] ({where}) " + " ".join(sentence.text for sentence in excerpt))
+    return "\n\n".join(lines) or "(none found)"
 
 
-def quotable(text: str, title: set[str]) -> bool:
-    """Whether a sentence can be evidence: not a fragment, such as a lone footnote, and not the vote's
-    title, which every gold passage starts with."""
-    words = terms(text)
-    return len(text) >= MIN_CHARS and sum(word in title for word in words) < 0.8 * len(words)
+def evidence(found: list[Sentence], cited: list[list[Sentence]], vote: str) -> list[dict]:
+    """Five sentences as evidence, verbatim with their page: the sentences found that are in the cited
+    excerpts, then the other sentences found, then the rest of the cited excerpts. Never a fragment,
+    nor the vote's title, which every gold passage starts with."""
+    in_cited = [sentence for excerpt in cited for sentence in excerpt]
+    title = set(terms(vote))
+    items: list[dict] = []
+    for sentence in [s for s in found if s in in_cited] + found + in_cited:
+        item = {"page": sentence.page, "text": sentence.text}
+        words = terms(sentence.text)
+        is_title = sum(word in title for word in words) >= 0.8 * len(words)
+        if len(sentence.text) >= MIN_CHARS and not is_title and item not in items:
+            items.append(item)
+    return items[:EVIDENCE]
