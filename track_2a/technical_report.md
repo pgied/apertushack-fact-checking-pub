@@ -27,7 +27,7 @@ The CLI, [`src/entrypoint.py`](src/entrypoint.py), runs in our Docker image (lin
 | 4. Cross-lingual claim | Apertus translates it; the prompt shows both versions              | The same                                                                                      |
 | 5. Select              | The 6 best sentences with their neighbours, about 2,000 characters | The 8 best sentences with their neighbours, about 2,000 characters                            |
 | 6. Decide              | Apertus explains in at most three sentences, then gives the label  | The same, and Apertus names the excerpts that decide it                                       |
-| 7. Evidence            | The reference, page `null` (not scored)                            | Five verbatim sentences of the booklet with their pages                                       |
+| 7. Evidence            | The reference or the part shown, page `null`; none for neutral (not scored) | Five verbatim sentences of the booklet with their pages                              |
 
 ### 2.1 Shared by both tasks: the sentence index and the translation
 
@@ -76,7 +76,7 @@ This matches the finding that irrelevant context distracts language models (Shi 
 
 **6. Decide as in the beginner task** (Section 2.2). Apertus gets the vote, the excerpts, the claim and its translation, and the `quote` definitions, with "booklet" in place of "reference". It first explains in at most three sentences what the excerpts say about the claim, quoting the sentence that says the opposite for a contradiction. Then it writes `Label: <word>` and, on a last line, `Excerpts: <numbers>`, the excerpts that decide it. Only these two lines are read, since the reasoning may name other labels and numbers. The prompt also says that only the booklet counts, not the model's own knowledge.
 
-We first asked for JSON only, `{"label": …, "excerpts": [numbers]}`, with a definition of neutral that covered a claim with a detail the booklet does not give, such as a number or a date. That answered 42 contradictions neutral, often with the opposite in the excerpts, and the model sometimes gave the label first and explained the contradiction after it. Deciding as in the beginner task cut them to 4 (Table 3).
+We first asked for JSON only, `{"label": …, "excerpts": [numbers]}`, with a definition of neutral that covered a claim with a detail the booklet does not give, such as a number or a date. That answered 42 contradictions neutral, often with the opposite in the excerpts. The token limit was not the cause: given 250 tokens instead of 40, the model answered neutral in all 42 again, since it wrote the label first and any explanation after it. Deciding as in the beginner task cut them to 4 (Table 3).
 
 **7. Return the evidence:** five sentences of the booklet, verbatim in its language, with their 1-based pages. They come in this order:
 
