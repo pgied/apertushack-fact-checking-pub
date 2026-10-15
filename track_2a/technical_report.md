@@ -28,7 +28,7 @@ There is no OCR, no embedding model and no other model. A case sends one request
 
 ### 2.1 Shared by both tasks: sentence search and translation
 
-- **Sentences** are the unit of search, since the evidence has to be short and verbatim, and small units fit more of the relevant text into a fixed context (Chen et al., 2024). A sentence never crosses a paragraph or a page, an abbreviation such as "z. B." does not end it, and one under 40 characters joins the next.
+- **Sentences** are the unit of search, since the evidence has to be short and verbatim. Chen et al. (2024) found, with dense retrievers, that sentences fit more of the relevant text into a fixed number of tokens than passages, and propositions more still; but propositions are rewritten by a model, so they could not be quoted. A sentence never crosses a paragraph or a page, an abbreviation such as "z. B." does not end it, and one under 40 characters joins the next.
 - **BM25** ranks the sentences for the claim (k1 = 1.2, b = 0.75; Robertson and Zaragoza, 2009). Words are lower-cased, stripped of accents and cut to their first 7 letters: a language-independent stand-in for stemming (McNamee et al., 2009), which found more evidence than 5, 6 or whole words. A sentence also gets 30 % of its better neighbour's score.
 - **Translation:** BM25 needs the claim in the document's language, so Apertus first translates a claim in another language. This is translate-test (Conneau et al., 2018; Artetxe et al., 2023), with the model translating for itself (self-translate; Etxaniz et al., 2024).
 
