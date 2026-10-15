@@ -17,12 +17,14 @@ Advanced task, for each case:
 Beginner task: the baseline's single request, unchanged.
 """
 
+import json
 import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 from src.llm import LLM
+from src.nli import LABELS
 from src.strategies._gied.index import MIN_CHARS, Booklet, Sentence, terms
 from src.strategies._gied.pdf import page_count, read
 from src.strategies.baseline.strategy import Baseline, read_label
@@ -57,11 +59,13 @@ class Retrieve(Baseline):
         pivot: bool = True  # search a cross-lingual claim in the booklet's edition in the claim's language
         hits: int = 8  # sentences found, around which the excerpts are cut
         context_chars: int = 2000  # about how much text the excerpts have in all
+        answers: str = ""  # a JSONL file to append each decision to, its prompt and answer, e.g. data/runs/<run>/answers.jsonl
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.read_booklets: dict[str, Booklet] = {}  # path → booklet, read once
         self.reading = threading.Lock()  # one booklet at a time: PDFium is not thread-safe
+        self.writing = threading.Lock()  # cases run in threads, and all of them append to the answers file
 
     def booklet(self, path: str) -> Booklet:
         """The booklet at `path`, relative to the cases' folder, read the first time a case needs it."""
@@ -129,10 +133,18 @@ class Retrieve(Baseline):
         return excerpts
 
     def ask(self, case: dict, context: str, llm: LLM) -> tuple[int, list[int]]:
-        """Apertus' answer about the claim, given numbered excerpts: the label, and the numbers in the
-        answer, which are the excerpts it cites."""
+        """Apertus' answer about the claim, given numbered excerpts: the label, and the excerpts it cites."""
         prompt = f"VOTE:\n{case['vote']}\n\nEXCERPTS:\n{context}\n\nCLAIM:\n{case['claim']['text']}\n\nAnswer:"
         answer = llm.chat([{"role": "system", "content": self.system_prompt}, {"role": "user", "content": prompt}])
+        label, numbers = self.read_answer(case, answer)
+        if self.settings.answers:
+            record = {"id": case["id"], "label": LABELS[label], "excerpts": numbers, "answer": answer, "prompt": prompt}
+            with self.writing, open(ROOT / self.settings.answers, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return label, numbers
+
+    def read_answer(self, case: dict, answer: str) -> tuple[int, list[int]]:
+        """The label in the answer, and the numbers in it, which are the excerpts it cites."""
         return read_label(case, answer), [int(n) for n in re.findall(r"\d+", answer)]
 
 

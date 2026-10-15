@@ -51,7 +51,7 @@ docker run --rm --platform linux/amd64 -e BASE_URL -e API_KEY \
 
 - **Input:** JSONL, one case per line. A case has either a `booklet` (task A, our advanced task) or a `reference` (task B, our beginner task), and a file can mix both. Booklet paths are relative to `/data`.
 - **Output:** one line per case, with the label, the evidence and the metrics, and exit code 0. A case that fails is answered neutral, so that no line is missing.
-- **Model and strategy:** the ones we submit, `SUBMITTED` in [`src/entrypoint.py`](src/entrypoint.py); Hydra overrides after the arguments change them. Only Apertus v1.5 is called, always through `BASE_URL`.
+- **Model and strategy:** the ones we submit for each task, `SUBMITTED` in [`src/entrypoint.py`](src/entrypoint.py): Apertus v1.5 70B with [`gied_beginner_scoped`](src/strategies/gied_beginner_scoped/strategy.py) for the beginner task and [`gied_strict_reasoned`](src/strategies/gied_strict_reasoned/strategy.py) for the advanced task. Hydra overrides after the arguments change them for both tasks. Only Apertus v1.5 is called, always through `BASE_URL`.
 - **The published image:** `ghcr.io/pgied/apertushack-fact-checking-pub:latest`, built for linux/amd64 by the GitHub workflow [`image.yml`](../.github/workflows/image.yml) on every push to `main`. The submission form has no field for it, so it is named here and in the form's notes.
 
 ## Developing

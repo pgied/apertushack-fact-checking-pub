@@ -4,7 +4,7 @@
 - **Event:** Online
 - **Team:** `team name` — `member`, `member`, `Patrick Giedemann`
 - **Demo:** the Docker image `ghcr.io/pgied/apertushack-fact-checking-pub:latest` (no demo video required)
-- **Code:** the beginner task is [`gied_beginner_scoped`](src/strategies/gied_beginner_scoped/strategy.py), the advanced task is [`gied_multi_lang_scoped`](src/strategies/gied_multi_lang_scoped/strategy.py); the shared retrieval code is in [`src/strategies/_gied/`](src/strategies/_gied/).
+- **Code:** the beginner task is [`gied_beginner_scoped`](src/strategies/gied_beginner_scoped/strategy.py), the advanced task is [`gied_strict_reasoned`](src/strategies/gied_strict_reasoned/strategy.py); the shared retrieval code is in [`src/strategies/_gied/`](src/strategies/_gied/).
 
 ## 1. Summary
 
@@ -13,7 +13,7 @@ Every Swiss popular vote comes with an official voting booklet in German, French
 Both of our solutions **retrieve, then verify**, as evidence-based fact checking does (Thorne et al., 2018; Guo et al., 2022): local code finds the few sentences that bear on the claim, and Apertus v1.5 70B judges only those. On all 1,488 cases of the public dataset:
 
 - **Beginner task:** macro-F1 **0.987**, with 834 tokens and 0.6 ms of processing time per case. The baseline prompt reached 0.788, with about 1,900 tokens.
-- **Advanced task:** macro-F1 **0.962** and evidence Hit@5 **0.988**, with 1,524 tokens and 6.4 ms per case. Full-document prompting reached 0.70–0.73 and 0.13 on 150 of these cases, with about 34,770 tokens per case.
+- **Advanced task:** macro-F1 **0.974** and evidence Hit@5 **0.979**, with 1,157 tokens and 3.6 ms per case. Full-document prompting reached 0.70–0.73 and 0.13 on 150 of these cases, with about 34,770 tokens per case.
 
 ## 2. Architecture
 
@@ -24,9 +24,9 @@ The CLI, [`src/entrypoint.py`](src/entrypoint.py), runs in our Docker image (lin
 | 1. Read                | The reference as given                                             | The booklet's tagged structure: headings, paragraphs, reading order                           |
 | 2. Index               | Sentences, ranked by BM25                                          | Sentences with their page and headings, ranked by BM25                                        |
 | 3. Narrow              | —                                                                  | Only the pages of the claim's vote                                                            |
-| 4. Cross-lingual claim | Apertus translates it; the prompt shows both versions              | Apertus translates it; the booklet's edition in the claim's language is searched too          |
-| 5. Select              | The 6 best sentences with their neighbours, about 2,000 characters | The 8 best sentences of each search with their neighbours, about 2,000 characters per edition |
-| 6. Decide              | Apertus explains in at most three sentences, then gives the label  | Apertus answers in JSON: the label and the excerpts that decide it                            |
+| 4. Cross-lingual claim | Apertus translates it; the prompt shows both versions              | The same                                                                                      |
+| 5. Select              | The 6 best sentences with their neighbours, about 2,000 characters | The 8 best sentences with their neighbours, about 2,000 characters                            |
+| 6. Decide              | Apertus explains in at most three sentences, then gives the label  | The same, and Apertus names the excerpts that decide it                                       |
 | 7. Evidence            | The reference, page `null` (not scored)                            | Five verbatim sentences of the booklet with their pages                                       |
 
 ### 2.1 Shared by both tasks: the sentence index and the translation
@@ -70,27 +70,18 @@ This matches the finding that irrelevant context distracts language models (Shi 
 
 **3. Narrow to the claim's vote.** A booklet covers one to five votes, and each case names its vote. Running headers such as "Erste Vorlage: …" or "Deuxième objet : …" assign the pages of the booklet's detailed part to the votes. We keep the vote whose pages share the most rare words and word pairs with the case's vote title. These pages are a third of a booklet on average, and they hold all gold pages in 989 of the 990 cases with a gold entailment or contradiction. Claims about the voting text or the summary read alike for every vote, so they had often been judged against another vote's text.
 
-**4. Search in both languages.** A claim in another language than the booklet is searched twice:
+**4. Search the supplied booklet.** A claim in the booklet's language is searched as it is, and a claim in another language with its translation (Section 2.1), within the pages of the claim's vote. We read only the booklet the case supplies. Every booklet is also published in the other two languages with the same pages, and searching the edition in the claim's language as well raised macro-F1 to 0.962 in our runs (Table 3). But that edition is in the input folder only when another case uses it, and the challenge asks to judge against the supplied source, so we left it out.
 
-- **Translated:** the booklet is searched with the translated claim (Section 2.1).
-- **In the other edition:** every booklet is published in all three languages with the same pages, so the edition in the claim's language is searched with the claim as it is. A sentence found there is mapped to the sentence at the same relative position on the same page of the booklet. This is a positional variant of length-based sentence alignment (Gale and Church, 1993).
+**5. Build the excerpts.** The 8 best sentences become numbered excerpts, best first, each with the sentence before and after it on its page, up to about 2,000 characters in all. Each excerpt names its page and section, for example `[3] (p. 12, Argumente › Zu strikte Vorgaben) …`. That is a few percent of a booklet, which has 23,000 to 270,000 characters. Long and distracting contexts lower accuracy (Liu et al., 2024; Shi et al., 2023), and retrieval with a short context can match long-context models (Xu et al., 2024).
 
-Retrieval alone, without the model, shows why. Searched with the untranslated claim, the booklet gave the evidence for 54 % of the cross-lingual claims, and the edition in the claim's language for 94 %. Adding the search with the translation, and showing the model both editions, raised Hit@5 from 0.957 to 0.987 (Table 3).
+**6. Decide as in the beginner task** (Section 2.2). Apertus gets the vote, the excerpts, the claim and its translation, and the `quote` definitions, with "booklet" in place of "reference". It first explains in at most three sentences what the excerpts say about the claim, quoting the sentence that says the opposite for a contradiction. Then it writes `Label: <word>` and, on a last line, `Excerpts: <numbers>`, the excerpts that decide it. Only these two lines are read, since the reasoning may name other labels and numbers. The prompt also says that only the booklet counts, not the model's own knowledge.
 
-**5. Build the excerpts.** The 8 best sentences of each search become numbered excerpts, best first, each with the sentence before and after it on its page, up to about 2,000 characters per edition. Each excerpt names its page and section, for example `[3] (p. 12, Argumente › Zu strikte Vorgaben) …`. The other edition's excerpts follow under `IN THE FRENCH EDITION:`. That is a few percent of a booklet, which has 23,000 to 270,000 characters. Long and distracting contexts lower accuracy (Liu et al., 2024; Shi et al., 2023), and retrieval with a short context can match long-context models (Xu et al., 2024).
-
-**6. Decide.** Apertus gets the vote, the excerpts and the claim, and answers with JSON only, `{"label": …, "excerpts": [numbers]}`, following these definitions:
-
-> - **entailment:** the booklet states the claim, or it follows clearly from what the booklet states.
-> - **contradiction:** only when the booklet explicitly states the opposite of the claim, for example the claim says the Federal Council recommends a yes and the booklet says it recommends a no, or the claim says something will happen and the booklet says it will not. You must be able to point to the sentence.
-> - **neutral:** everything else. Most claims that are not true are neutral, not contradictions: a claim that adds a detail the booklet does not give (a number, a date, a deadline, a measure, who says or wants it), or that the booklet simply does not address, is neutral, even if it sounds wrong.
-
-The prompt also says that only the booklet counts, not the model's own knowledge. The JSON format names all three labels and gives no example answer to copy. With the example answer "contradiction 2 1" in an earlier prompt, the 8B model had answered contradiction in 1,408 of 1,488 cases.
+We first asked for JSON only, `{"label": …, "excerpts": [numbers]}`, with a definition of neutral that covered a claim with a detail the booklet does not give, such as a number or a date. That answered 42 contradictions neutral, often with the opposite in the excerpts, and the model sometimes gave the label first and explained the contradiction after it. Deciding as in the beginner task cut them to 4 (Table 3).
 
 **7. Return the evidence:** five sentences of the booklet, verbatim in its language, with their 1-based pages. They come in this order:
 
 1. The sentences found that are also in an excerpt the model cited.
-2. The other sentences found, with the rankings of both searches merged by reciprocal rank fusion (Cormack et al., 2009).
+2. The other sentences found, best first.
 3. The rest of the cited excerpts.
 
 The vote's title, which starts every gold passage, and fragments under 40 characters are never returned. A neutral answer gets evidence too, since the challenge scores the evidence of every case whose gold label is entailment or contradiction.
@@ -100,7 +91,7 @@ The vote's title, which starts every gold passage, and fragments under 40 charac
 - **Model:** `swiss-ai/Apertus-v1.5-70B` (Project Apertus, 2025), at temperature 0. The 8B model served during development and scored lower.
 - **How:** inference only, prompted zero-shot, with no fine-tuning. Apertus does two things:
   - **Translation** of a cross-lingual claim, at most 200 output tokens.
-  - **The decision:** in the beginner task the reasoning and the label, at most 200 tokens; in the advanced task a JSON answer of at most 40 tokens.
+  - **The decision:** in both tasks at most three sentences of reasoning, then the label: at most 200 output tokens in the beginner task, and 250 in the advanced task, whose answer also names the excerpts.
 - **Where:** a hosted endpoint, called through the OpenAI-compatible chat API at `BASE_URL`: the CSCS Inference API during development, the organisers' proxy at the evaluation. 8 requests run in parallel.
 
 ## 4. Data
@@ -130,21 +121,19 @@ All runs used Apertus v1.5 70B through the CSCS Inference API. The endpoint is n
 | Beginner | Baseline: the whole reference, a one-word answer | 0.788         | –         | 1,897 + ≤ 10               | –                        |
 | Beginner | **Ours**                                         | **0.987**     | –         | 748 + 86                   | 0.6 ms                   |
 | Advanced | Full-document prompting (150 cases, 2 runs)      | 0.701 / 0.727 | 0.128     | 34,762 + ≤ 10              | –                        |
-| Advanced | Ours, on the same 150 cases                      | 0.965         | 1.000     | 1,469 + 42                 | 53.8 ms                  |
-| Advanced | **Ours**                                         | **0.962**     | **0.988** | 1,481 + 43                 | 6.4 ms                   |
-
-In a run of 150 cases, the fixed costs of a run weigh more per case.
+| Advanced | Ours, on the same 150 cases                      | 0.978         | 1.000     | 1,048 + 102                | –                        |
+| Advanced | **Ours**                                         | **0.974**     | **0.979** | 1,053 + 104                | 3.6 ms                   |
 
 **Table 2: By language** (all 1,488 cases; the language of the claim, of the document, and whether they differ)
 
 | Cases                                 | Number          | Beginner macro-F1     | Advanced macro-F1     | Advanced Hit@5        |
 | ------------------------------------- | --------------- | --------------------- | --------------------- | --------------------- |
-| All                                   | 1,488           | 0.987                 | 0.962                 | 0.988                 |
-| Claim in German / French / Italian    | 495 / 497 / 496 | 0.980 / 0.990 / 0.990 | 0.968 / 0.959 / 0.960 | 0.988 / 0.979 / 0.997 |
-| Document in German / French / Italian | 455 / 569 / 464 | 0.985 / 0.989 / 0.985 | 0.955 / 0.968 / 0.962 | 0.977 / 0.990 / 0.997 |
-| Same language / cross-lingual         | 515 / 973       | 0.990 / 0.985         | 0.954 / 0.966         | 0.988 / 0.988         |
+| All                                   | 1,488           | 0.987                 | 0.974                 | 0.979                 |
+| Claim in German / French / Italian    | 495 / 497 / 496 | 0.980 / 0.990 / 0.990 | 0.966 / 0.978 / 0.978 | 0.967 / 0.985 / 0.985 |
+| Document in German / French / Italian | 455 / 569 / 464 | 0.985 / 0.989 / 0.985 | 0.963 / 0.972 / 0.987 | 0.970 / 0.987 / 0.977 |
+| Same language / cross-lingual         | 515 / 973       | 0.990 / 0.985         | 0.958 / 0.982         | 0.988 / 0.974         |
 
-Across the nine pairs of document and claim language, macro-F1 ranges from 0.973 to 1.000 in the beginner task, and from 0.944 (German booklet, Italian claim) to 0.984 (French booklet, German claim) in the advanced task.
+Across the nine pairs of document and claim language, macro-F1 ranges from 0.973 to 1.000 in the beginner task, and from 0.923 (German booklet, German claim) to 0.987 in the advanced task.
 
 **Table 3: What each step added** (all 1,488 cases unless noted)
 
@@ -157,29 +146,32 @@ Across the nine pairs of document and claim language, macro-F1 ranges from 0.973
 | Beginner | + only the sentences around the claim (the solution)                                                | 0.987     | –     | 748                   |
 | Advanced | Full-document prompting (150 cases)                                                                 | 0.70–0.73 | 0.13  | 34,762                |
 | Advanced | Only the vote's pages; the model quotes sentences, which are looked up in the PDF                   | 0.850     | 0.485 | 11,553                |
-| Advanced | Retrieve, then verify: tags, BM25, the edition in the claim's language, the label definitions above | 0.927     | 0.957 | 960                   |
+| Advanced | Retrieve, then verify: tags, BM25, the edition in the claim's language, a narrow contradiction      | 0.927     | 0.957 | 960                   |
 | Advanced | + the search with the translated claim, excerpts of both editions                                   | 0.953     | 0.987 | 1,471                 |
-| Advanced | + only the pages of the claim's vote (the solution)                                                 | 0.962     | 0.988 | 1,481                 |
+| Advanced | + only the pages of the claim's vote                                                                | 0.962     | 0.988 | 1,481                 |
+| Advanced | Only the supplied booklet: the translated claim alone, shown to the model                           | 0.951     | 0.978 | 1,077                 |
+| Advanced | + deciding as in the beginner task, reasoning first (the solution)                                  | 0.974     | 0.979 | 1,053                 |
 
-The output adds about 86 tokens per case in the beginner task (the translation and the reasoning), and about 43 in the advanced task (the translation and the JSON answer).
+The output adds about 86 tokens per case in the beginner task (the translation and the reasoning), and about 104 in the advanced task (the translation and the reasoning).
 
 **Tried and left out:**
 
-- **Paraphrases:** five paraphrases of the claim, searched alongside it (after Hoyle et al., 2023). In the beginner task they reached 0.979, for 2,513 tokens per case. In the advanced task they reached 0.933, for 30 % more tokens; with the second edition 0.949, below the edition alone.
+- **Paraphrases:** five paraphrases of the claim, searched alongside it (after Hoyle et al., 2023). In the beginner task they reached 0.979, for 2,513 tokens per case. In the advanced task they reached 0.947 on top of the translation, against 0.951 without, for 25 % more tokens; the rankings were merged by reciprocal rank fusion (Cormack et al., 2009).
+- **The booklet's edition in the claim's language** (advanced task): searching it as well, with each sentence found there mapped to the sentence at the same relative position on the same page of the booklet, a positional variant of length-based sentence alignment (Gale and Church, 1993), raised macro-F1 to 0.962 and Hit@5 to 0.988. It is left out for the reason given in Section 2.3.
 - **Shorter excerpts in the beginner task:** 1,500 characters gave 0.984, and 1,000 characters 0.977, for 800 and 729 tokens per case.
 - **More excerpts after a neutral answer** (advanced task, 150 cases): this fixed 2 misses but turned 3 correct neutral answers into contradictions, for 80 % more input tokens.
-- **Three extra rules in the advanced prompt:** macro-F1 0.960 instead of 0.962. They traded contradictions answered neutral for neutrals answered contradiction.
+- **Four extra lines in the advanced prompt,** one for each of its main errors (who says what; arguments against a proposal do not contradict what it would do; compare every number; "not mentioned" is neutral): macro-F1 0.973 instead of 0.974, for 11 % more tokens. They fixed 15 errors and made 17 new ones, mostly neutral claims about another topic answered contradiction although the reasoning said the booklet does not mention them.
+- **Three extra rules in the advanced prompt** (with the other edition): macro-F1 0.960 instead of 0.962. They traded contradictions answered neutral for neutrals answered contradiction.
 
-**Tokens and time.** Narrowing the context cut the tokens per case 2.3-fold in the beginner task and 23-fold in the advanced task, while it raised macro-F1. The processing time leaves out Apertus' latency, which was 1.5 s per case in the beginner task and 1.1 s in the advanced task. That leaves 0.9 s per run of all 1,488 cases in the beginner task, and 9.5 s in the advanced task:
+**Tokens and time.** Narrowing the context cut the tokens per case 2.3-fold in the beginner task and 30-fold in the advanced task, while it raised macro-F1. The processing time leaves out Apertus' latency, which was 1.5 s per case in the beginner task and 1.9 s in the advanced task. That leaves 0.9 s per run of all 1,488 cases in the beginner task, and 5.4 s in the advanced task:
 
 - **Beginner task:** all of it is start-up, mostly Python's imports, half of them the OpenAI client. The search runs while other cases' requests are in flight, so it adds nothing measurable.
-- **Advanced task:** start-up takes 0.8 s. Reading the text layer of the 60 booklets before the first request takes 4.6 s, all of which counts. Reading their tags when a case first needs them takes about 17 s, but mostly while other cases' requests are in flight: only 4.1 s of it counts.
+- **Advanced task:** start-up takes 0.8 s. Reading the text layer of the 60 booklets before the first request takes 4.6 s, all of which counts. Reading their tags when a case first needs them takes about 17 s, but while other cases' requests are in flight, so practically none of it counts.
 
 ## 6. Limitations
 
 - **No held-out split:** prompts and settings were chosen on the same 1,488 public cases we report, so the private benchmark may score lower.
-- **Missed contradictions:** in the beginner task, 5 of the errors that scoping introduced are contradictions whose deciding sentence was cut away. In the advanced task they are the largest error left: 28 contradictions were answered neutral, against 18 neutral claims answered contradiction.
-- **The other edition** is only searched if it is in the same folder as the booklet. Without it, a cross-lingual claim is searched with its translation alone.
+- **Errors left:** in the beginner task, 5 of the errors that scoping introduced are contradictions whose deciding sentence was cut away. In the advanced task, most errors left are wrong answers of contradiction: 18 neutral claims and 10 entailments, most of the 10 same-language claims about what happens if the vote is accepted. Same-language claims are the weaker group (Table 2).
 - **Scope** relies on the running headers. A booklet without them is searched whole.
 - **No OCR:** all booklets are born-digital. A scanned booklet would have neither tags nor a text layer.
 - **Time:** we measure in-process, on a laptop. The organisers time the container from outside, which also counts its start.
@@ -188,15 +180,15 @@ The output adds about 86 tokens per case in the beginner task (the translation a
 
 - **Environment:** `uv sync` in `track_2a/`. All dependencies (`uv.lock`) and the dataset revision are pinned.
 - **Data:** `uv run python -m src stage=prepare` downloads the dataset and the booklets.
-- **Runs:** `uv run python -m src strategy=gied_beginner_scoped model=apertus-70b` (beginner task) and `uv run python -m src task=advanced strategy=gied_multi_lang_scoped model=apertus-70b` (advanced task). Each writes its predictions, scores, tokens and processing time to `data/runs/`.
+- **Runs:** `uv run python -m src strategy=gied_beginner_scoped model=apertus-70b` (beginner task) and `uv run python -m src task=advanced strategy=gied_strict_reasoned model=apertus-70b` (advanced task). Each writes its predictions, scores, tokens and processing time to `data/runs/`.
 - **The submission:** `make run` builds the Docker image and decides the sample cases. It needs only `API_KEY`, plus `BASE_URL` for another endpoint: no model weights and no GPU.
 - **Hardware:** any CPU; all our runs were made from a laptop. Temperature 0, with no sampling.
 - **Commit:** `exact commit`.
 
 ## 8. Next steps
 
-- **Hide the rest of the advanced task's processing time:** read each booklet's text layer when a case first needs it, as the tags already are, and send the translation before reading the booklet.
-- **Recover missed contradictions,** for example by always showing the sentences that share a number or a date with the claim.
+- **Look into the wrong answers of contradiction** in the advanced task (18 neutral claims, 10 entailments), and into the same-language claims, which are now the weaker group.
+- **Hide the rest of the advanced task's processing time:** read each booklet's text layer when a case first needs it, as the tags already are.
 - **Validate on a held-out split,** and measure the cheaper 8B model.
 
 ## License

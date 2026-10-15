@@ -8,9 +8,9 @@ It follows the contract of the challenge's Solution API Guide, https://hackapert
   the beginner task. Booklet paths are relative to the folder of the input, /data in the container.
 - Every case gets one line in the output, in the order the cases finish. A case that fails, even
   after the client's retries, is answered neutral: a missing line would count as wrong anyway.
-- The model and the strategy are the ones we submit, SUBMITTED below. Hydra overrides after the
-  arguments change them, e.g. model=apertus-8b; LLM_NAME in the environment sets the model name.
-  The endpoint and its key come from BASE_URL and API_KEY, see conf/config.yaml.
+- Each task has the model and the strategy we submit for it, SUBMITTED below. Hydra overrides after
+  the arguments change them for both tasks, e.g. model=apertus-8b; LLM_NAME in the environment sets
+  the model name. The endpoint and its key come from BASE_URL and API_KEY, see conf/config.yaml.
 - At the end it prints the run's time without the model, which the challenge's time score counts
   (src/timing.py). The organisers measure their own; `metrics.inference_time_ms` is not scored.
 """
@@ -36,8 +36,12 @@ from src.timing import Stopwatch, describe
 
 ROOT = Path(__file__).resolve().parent.parent  # relative paths in the config start here
 
-# What we submit. Change it here when another model or strategy has proven better in the measurements.
-SUBMITTED = ["model=apertus-70b", "strategy=baseline"]
+# What we submit for each task. Change it here when another model or strategy has proven better in the
+# measurements: gied_strict_reasoned reads only the booklet the case supplies.
+SUBMITTED = {
+    "beginner": ["model=apertus-70b", "strategy=gied_beginner_scoped"],
+    "advanced": ["model=apertus-70b", "strategy=gied_strict_reasoned"],
+}
 
 NEUTRAL = LABELS.index("neutral")
 
@@ -54,44 +58,46 @@ def main(argv: list[str] | None = None) -> None:
     load_dotenv(ROOT / ".env")
     catalog = Catalog()
     catalog.register()
-    cfg = configure(args.overrides)
     cases = dataset.read_jsonl(args.input)
     by_task: dict[str, list[dict]] = {}
     for case in cases:
         by_task.setdefault(task_of(case), []).append(case)
 
-    strategy_class = catalog.load(cfg.strategy.name)
-    if missing := sorted(set(by_task) - set(strategy_class.tasks)):
-        raise SystemExit(f"The strategy {cfg.strategy.name} does not do the {' and '.join(missing)} task")
-    backend = cfg.backends[cfg.model.backend]
-    client = make_client(backend)
-    settings = OmegaConf.to_object(cfg.strategy)  # the strategy's own Settings class, with the overrides
-    request = {"temperature": settings.temperature, "max_tokens": settings.max_tokens,
-               **OmegaConf.to_container(backend.options)}
+    # Each task its own configuration, strategy and client. A strategy that does not do its task, or a
+    # missing key, stops the run before the first case.
+    configs = {task: configure(task, args.overrides) for task in by_task}
+    classes = {task: catalog.load(cfg.strategy.name) for task, cfg in configs.items()}
+    for task, strategy_class in classes.items():
+        if task not in strategy_class.tasks:
+            raise SystemExit(f"The strategy {configs[task].strategy.name} does not do the {task} task")
+    backends = {task: cfg.backends[cfg.model.backend] for task, cfg in configs.items()}
+    clients = {task: make_client(backend) for task, backend in backends.items()}
+    settings = {task: OmegaConf.to_object(cfg.strategy) for task, cfg in configs.items()}  # each strategy's own Settings
+    requests = {task: {"temperature": settings[task].temperature, "max_tokens": settings[task].max_tokens,
+                       **OmegaConf.to_container(backends[task].options)} for task in configs}
+    workers = max((backend.workers for backend in backends.values()), default=1)
     stopwatch = Stopwatch(STARTED)  # the run's time without the model, which the challenge's time score counts
 
-    def llm() -> LLM:  # every case gets its own, to count its tokens
-        return LLM(client, cfg.model.name, request, stopwatch.in_flight)
+    def llm(task: str) -> LLM:  # every case gets its own, to count its tokens
+        return LLM(clients[task], configs[task].model.name, requests[task], stopwatch.in_flight)
 
     # Once per task, for all its cases: read the booklets and set up the strategy. If that fails, the
     # task's cases are answered neutral, and the other task still runs.
     stopwatch.lap("startup")  # Python's start, the imports, the configuration and reading the cases
     started = {}
     for task, task_cases in by_task.items():
+        name = f"{task}: {len(task_cases)} cases with the strategy {configs[task].strategy.name} and {configs[task].model.name}"
         try:
-            started[task], setup = strategy_class.start(settings, task, task_cases, args.input.parent, llm())
-            print(f"{task}: {len(task_cases)} cases, set up in {setup['setup_time_ms']:,} ms, "
-                  f"{setup['booklets']} booklets read", file=sys.stderr)
+            started[task], setup = classes[task].start(settings[task], task, task_cases, args.input.parent, llm(task))
+            print(f"{name}, set up in {setup['setup_time_ms']:,} ms, {setup['booklets']} booklets read", file=sys.stderr)
         except Exception as error:
-            print(f"{task}: setting up failed, its {len(task_cases)} cases are answered neutral: {error!r}",
-                  file=sys.stderr)
-    print(f"Deciding {len(cases)} cases with the strategy {cfg.strategy.name} and {cfg.model.name}", file=sys.stderr)
+            print(f"{name}: setting up failed, they are answered neutral: {error!r}", file=sys.stderr)
     stopwatch.lap("setup")
 
     failed = 0
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    with open(args.output, "w", encoding="utf-8") as out, ThreadPoolExecutor(backend.workers) as pool:
-        futures = [pool.submit(decide, started.get(task_of(case)), case, llm()) for case in cases]
+    with open(args.output, "w", encoding="utf-8") as out, ThreadPoolExecutor(workers) as pool:
+        futures = [pool.submit(decide, started.get(task_of(case)), case, llm(task_of(case))) for case in cases]
         for future in as_completed(futures):
             prediction, ok = future.result()
             failed += not ok
@@ -100,12 +106,12 @@ def main(argv: list[str] | None = None) -> None:
     stopwatch.lap("cases")
     print(f"Wrote {len(cases)} predictions to {args.output}"
           + (f", {failed} of them neutral because they failed" if failed else ""), file=sys.stderr)
-    print(f"Time without the model: {describe(stopwatch.summary(len(cases), backend.workers))}", file=sys.stderr)
+    print(f"Time without the model: {describe(stopwatch.summary(len(cases), workers))}", file=sys.stderr)
 
 
-def configure(overrides: list[str]) -> DictConfig:
-    """The configuration in conf/ with what we submit, then the given overrides, then LLM_NAME."""
-    overrides = [*SUBMITTED, *overrides]
+def configure(task: str, overrides: list[str]) -> DictConfig:
+    """The configuration in conf/ with what we submit for the task, then the given overrides, then LLM_NAME."""
+    overrides = [*SUBMITTED[task], f"task={task}", *overrides]
     if os.environ.get("LLM_NAME"):  # the project template's variable for the model's name
         overrides.append(f"model.name='{os.environ['LLM_NAME']}'")
     with initialize_config_dir(config_dir=str(ROOT / "conf"), version_base=None):

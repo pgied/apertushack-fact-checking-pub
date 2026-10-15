@@ -2,6 +2,7 @@
 paraphrases, evidence from two editions, searching only the claim's vote, and the strict strategies, which
 read only the booklet the case supplies. With a scripted stand-in model and the example booklet."""
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +20,8 @@ from src.strategies.gied_paraphrase.strategy import GiedParaphrase
 from src.strategies.gied_retrieval_improvement.strategy import GiedRetrievalImprovement
 from src.strategies.gied_strict_multi_lang_scoped.strategy import GiedStrictMultiLangScoped
 from src.strategies.gied_strict_paraphrase.strategy import GiedStrictParaphrase
+from src.strategies.gied_strict_reasoned.strategy import GiedStrictReasoned
+from src.strategies.gied_strict_reasoned_rules.strategy import GiedStrictReasonedRules
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "data" / "examples"
 CASE = next(c for c in dataset.read_jsonl(EXAMPLES / "cases.jsonl") if c["id"] == "v1.1-row-357-A")  # Italian claim, French booklet
@@ -168,6 +171,42 @@ def test_strict_paraphrase_searches_with_the_translation_and_five_paraphrases(tw
     assert list(strategy.read_booklets) == [CASE["booklet"]["path"]]
     assert "THE CLAIM IN FRENCH (a translation" in client.decisions_asked()[0]["messages"][1]["content"]
     assert prediction["label_name"] == "entailment" and prediction["evidence"]
+
+
+def test_strict_reasoned_reads_only_the_label_and_excerpts_lines_after_the_reasoning(two_editions):
+    reasoning = "The booklet sets 25 years, in 3 places; excerpt 2 says the opposite: « ... ».\nLabel: contradiction\nExcerpts: 1"
+    strategy = GiedStrictReasoned(GiedStrictReasoned.Settings(name="s"), "advanced", {}, cases_dir=two_editions)
+    client = Scripted(reasoning)
+    prediction = strategy.answer(CASE, LLM(client, "some-model", {"max_tokens": strategy.settings.max_tokens}))
+
+    decision = client.decisions_asked()[0]
+    assert decision["max_tokens"] == 250 and "First explain" in decision["messages"][0]["content"]
+    assert "THE CLAIM IN FRENCH (a translation" in decision["messages"][1]["content"]  # the excerpts as before
+    assert strategy.read_answer(CASE, reasoning) == (2, [1])  # not 25, 3 or 2 from the reasoning
+    assert prediction["label_name"] == "contradiction" and prediction["evidence"]
+    assert list(strategy.read_booklets) == [CASE["booklet"]["path"]]
+
+
+def test_strict_reasoned_rules_adds_the_four_lines_and_decides_as_before(two_editions):
+    strategy = GiedStrictReasonedRules(GiedStrictReasonedRules.Settings(name="s"), "advanced", {}, cases_dir=two_editions)
+    for line in ("that party's own statements", "argue against the proposal does not contradict", "one by one",
+                 "If your explanation says\nthat the booklet does not mention"):
+        assert line in strategy.system_prompt
+    client = Scripted("The booklet says the opposite: « ... ».\nLabel: contradiction\nExcerpts: 1")
+    prediction = strategy.answer(CASE, LLM(client, "some-model", {"max_tokens": strategy.settings.max_tokens}))
+    assert client.decisions_asked()[0]["max_tokens"] == 300
+    assert prediction["label_name"] == "contradiction" and prediction["evidence"]
+
+
+def test_a_gied_strategy_keeps_its_answers_when_told_to(two_editions, tmp_path):
+    answers = tmp_path / "answers.jsonl"
+    strategy = GiedStrictReasoned(GiedStrictReasoned.Settings(name="s", answers=str(answers)), "advanced", {},
+                                  cases_dir=two_editions)
+    strategy.answer(CASE, LLM(Scripted("Reasoning.\nLabel: entailment\nExcerpts: 2"), "some-model", {}))
+
+    [record] = [json.loads(line) for line in answers.read_text(encoding="utf-8").splitlines()]
+    assert record["id"] == CASE["id"] and record["label"] == "entailment" and record["excerpts"] == [2]
+    assert record["answer"].endswith("Excerpts: 2") and "EXCERPTS:" in record["prompt"]
 
 
 def test_fuse_puts_first_what_several_rankings_put_high():
