@@ -72,7 +72,7 @@ uv run pytest                              # the tests
 - [`conf/`](conf/): the configuration (Hydra): which model, which backend, the generation settings.
 - [`tests/`](tests/): the tests, run with `uv run pytest`.
 - `data/`: everything generated, not in git: the dataset and one folder per run in `data/runs/`. Only the sample for `make run`, [`data/examples/`](data/examples/), is in git.
-- `docs/`: empty, as in the template. Our internal notes are kept in a private repository.
+- [`docs/`](docs/): the two diagrams of the technical report, as LaTeX (TikZ), with their PDF and SVG; each `.tex` file says how to build them. Our internal notes are kept in a private repository.
 - [`slurm/`](slurm/): job scripts for the CSCS cluster.
 - [`Dockerfile`](Dockerfile) and [`Makefile`](Makefile): the image, and `make run`.
 - [`technical_report.md`](technical_report.md): the technical report, handed in as a PDF.

@@ -1,0 +1,94 @@
+% Figure 1 of technical_report.md: the beginner task. Left, our code in the Docker image; right, the
+% requests to Apertus through BASE_URL. The numbers are the steps of Section 2.2; a dashed box is a step
+% that only some cases take.
+%
+% Build in docs/, with pdflatex and Poppler's pdftocairo:
+%
+%     pdflatex architecture_beginner.tex
+%     pdftocairo -svg architecture_beginner.pdf architecture_beginner.svg
+\documentclass[border=6pt]{standalone}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{tgheros}
+\renewcommand{\familydefault}{\sfdefault}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,backgrounds,calc,positioning}
+
+\definecolor{ink}{HTML}{1F2937}
+\definecolor{muted}{HTML}{4B5563}
+\definecolor{lane}{HTML}{F3F4F6}
+\definecolor{laneline}{HTML}{D1D5DB}
+\definecolor{apertus}{HTML}{1D4ED8}
+\definecolor{apertuslane}{HTML}{EFF6FF}
+\definecolor{apertusline}{HTML}{93C5FD}
+\pagecolor{white}  % also behind the headings, for a dark page around the SVG
+
+% A box's text: its title, then a line or two of detail
+\newcommand{\what}[2]{\textbf{#1}\\[1pt]{\footnotesize\color{muted}#2}}
+
+\tikzset{
+  every node/.style={font=\small, text=ink},
+  >={Stealth[length=5pt, width=4pt]},
+  box/.style={draw=ink!60, fill=white, rounded corners=3pt, align=left,
+              inner xsep=11pt, inner ysep=4pt, minimum height=10mm},
+  stage/.style={box, text width=70mm},
+  sometimes/.style={stage, dashed},
+  call/.style={box, draw=apertus, text width=40mm},
+  io/.style={fill=ink!10, rounded corners=7pt, align=center, text width=70mm,
+             inner xsep=11pt, inner ysep=3pt},
+  number/.style={circle, fill=ink, text=white, font=\footnotesize\bfseries,
+                 inner sep=0pt, minimum size=5mm},
+  flow/.style={->, draw=ink!60, line width=0.8pt},
+  request/.style={->, draw=apertus, line width=0.8pt},
+  lanebox/.style={rounded corners=6pt, line width=0.6pt},
+  heading/.style={font=\footnotesize\bfseries, anchor=south},
+}
+
+\begin{document}
+% 1.7 times as large: browsers draw the SVG's points as pixels, which would make its text tiny
+\scalebox{1.7}{%
+\begin{tikzpicture}[node distance=3mm]
+  % Our code, top to bottom
+  \node[io] (case) {\what{Case: a claim and its reference}{the reference is a section of the booklet}};
+  \node[sometimes, below=4mm of case] (s1)
+    {\what{Translate the claim}{only if it is in another language than the reference}};
+  \node[sometimes, below=of s1] (s2)
+    {\what{Scope the reference}{only if it is over 2,000 characters: the 6 sentences that
+     match best (BM25) and their neighbours, in order, with [\ldots\unkern] between}};
+  \node[stage, below=of s2] (s3)
+    {\what{Decide}{on the reference shown, the claim and its translation}};
+  \node[io, below=4mm of s3] (prediction)
+    {\what{Prediction: the label and the evidence}{the last \texttt{Label:} line; the reference
+     shown, page \texttt{null}}};
+
+  % Apertus, beside the steps that call it
+  \node[call, dashed, right=22mm of s1] (c1)
+    {\what{Translate}{the claim into the reference's language}};
+  \node[call, right=22mm of s3] (c3)
+    {\what{Reason, then label}{at most three sentences, then\\\texttt{Label:~<word>}}};
+
+  \foreach \n in {1, 2, 3} \node[number] at (s\n.west) {\n};
+  \draw[flow] (case) -- (s1);
+  \draw[flow] (s1) -- (s2);
+  \draw[flow] (s2) -- (s3);
+  \draw[flow] (s3) -- (prediction);
+  \foreach \n in {1, 3} {
+    \draw[request] ([yshift=1.5mm]s\n.east) -- ([yshift=1.5mm]c\n.west);
+    \draw[request] ([yshift=-1.5mm]c\n.west) -- ([yshift=-1.5mm]s\n.east);
+  }
+
+  % Where each runs: the two lanes, as high as the steps
+  \coordinate (top) at ($(case.north) + (0, 3mm)$);
+  \coordinate (bottom) at ($(prediction.south) + (0, -3mm)$);
+  \begin{scope}[on background layer]
+    \path[lanebox, fill=lane, draw=laneline]
+      ($(s1.west |- top) + (-5mm, 0)$) rectangle ($(s1.east |- bottom) + (5mm, 0)$);
+    \path[lanebox, fill=apertuslane, draw=apertusline]
+      ($(c1.west |- top) + (-5mm, 0)$) rectangle ($(c1.east |- bottom) + (5mm, 0)$);
+  \end{scope}
+  \node[heading, text=muted] at ($(s1.north |- top) + (0, 1mm)$)
+    {Our code, in the Docker image (CPU only)};
+  \node[heading, text=apertus] at ($(c1.north |- top) + (0, 1mm)$)
+    {Apertus v1.5 70B, through \texttt{BASE\_URL}};
+\end{tikzpicture}}
+\end{document}

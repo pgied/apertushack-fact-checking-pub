@@ -1,8 +1,8 @@
-# Technical report — `project name`
+# Technical report — `Multilingual Natural Language Inference over Swiss Official Voting Booklets`
 
 - **Track:** `Track 2A — OST: Multilingual Natural Language Inference over Swiss Official Voting Booklets`
 - **Event:** Online
-- **Team:** `team name` — `member`, `member`, `Patrick Giedemann`
+- **Team:** `FactCheckers` — `member`, `member`, `Patrick Giedemann`
 - **Demo:** the Docker image `ghcr.io/pgied/apertushack-fact-checking-pub:latest` (no demo video required)
 - **Code:** the beginner task is [`gied_beginner_scoped`](src/strategies/gied_beginner_scoped/strategy.py), the advanced task is [`gied_strict_reasoned`](src/strategies/gied_strict_reasoned/strategy.py); the shared retrieval code is in [`src/strategies/_gied/`](src/strategies/_gied/).
 
@@ -17,74 +17,57 @@ Both of our solutions **retrieve, then verify**, as evidence-based fact checking
 
 ## 2. Architecture
 
-The CLI, [`src/entrypoint.py`](src/entrypoint.py), runs in our Docker image (linux/amd64, CPU only). It reads the cases, sets up the strategy of each task, decides 8 cases at a time in threads, and writes one JSON line per case. Everything but Apertus runs in the container: PDFium (`pypdfium2`) reads the PDFs, and BM25 is our own Python code. There is no OCR, no embedding model and no other model. A case sends one request to Apertus if the claim is in the document's language, otherwise two: a translation, then the decision.
+| Component                                         | What it does                                                        | Where it runs                           |
+| ------------------------------------------------- | ------------------------------------------------------------------- | --------------------------------------- |
+| The CLI, [`src/entrypoint.py`](src/entrypoint.py) | Reads the cases, decides 8 at a time, writes one JSON line per case | Our Docker image: linux/amd64, CPU only |
+| PDFium (`pypdfium2`)                              | Reads the booklet's text from its PDF tags                          | Our Docker image                        |
+| BM25, our own Python code                         | Finds the sentences that bear on the claim                          | Our Docker image                        |
+| Apertus v1.5 70B                                  | Translates a claim in another language, and decides the label       | A hosted endpoint, through `BASE_URL`   |
 
-| Step                   | Beginner task: reference text                                      | Advanced task: booklet PDF                                                                    |
-| ---------------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- |
-| 1. Read                | The reference as given                                             | The booklet's tagged structure: headings, paragraphs, reading order                           |
-| 2. Index               | Sentences, ranked by BM25                                          | Sentences with their page and headings, ranked by BM25                                        |
-| 3. Narrow              | —                                                                  | Only the pages of the claim's vote                                                            |
-| 4. Cross-lingual claim | Apertus translates it; the prompt shows both versions              | The same                                                                                      |
-| 5. Select              | The 6 best sentences with their neighbours, about 2,000 characters | The 8 best sentences with their neighbours, about 2,000 characters                            |
-| 6. Decide              | Apertus explains in at most three sentences, then gives the label  | The same, and Apertus names the excerpts that decide it                                       |
-| 7. Evidence            | The reference or the part shown, page `null`; none for neutral (not scored) | Five verbatim sentences of the booklet with their pages                              |
+There is no OCR, no embedding model and no other model. A case sends one request to Apertus if the claim is in the document's language, otherwise two: a translation, then the decision. In Figures 1 and 2, our code is on the left and the requests to Apertus are on the right. The numbers are the steps of Sections 2.2 and 2.3, and a dashed box is a step that only some cases take.
 
-### 2.1 Shared by both tasks: the sentence index and the translation
+### 2.1 Shared by both tasks: sentence search and translation
 
-**The sentence index.** The text is split into sentences, never across a paragraph or a page. Abbreviations such as "z. B." do not end a sentence, and one under 40 characters joins the next. Sentences are the unit because the evidence has to be short and verbatim, and small units fit more of the relevant text into a fixed context (Chen et al., 2024). BM25 ranks them for the claim (k1 = 1.2, b = 0.75; Robertson and Zaragoza, 2009):
-
-- **Words** are lower-cased, stripped of accents and cut to their first 7 letters. Cutting words to a fixed prefix is a language-independent stand-in for stemming (McNamee et al., 2009), which suits German compounds as well as French and Italian inflection. 7 letters found more evidence than 5, 6 or whole words.
-- **Neighbours:** a sentence also gets 30 % of its better neighbour's score.
-
-**The translation.** Lexical search needs the claim in the document's language. So Apertus first translates a claim in another language, and the search uses the translation. This is translate-test (Conneau et al., 2018; Artetxe et al., 2023), with the model translating for itself (self-translate; Etxaniz et al., 2024).
+- **Sentences** are the unit of search, since the evidence has to be short and verbatim, and small units fit more of the relevant text into a fixed context (Chen et al., 2024). A sentence never crosses a paragraph or a page, an abbreviation such as "z. B." does not end it, and one under 40 characters joins the next.
+- **BM25** ranks the sentences for the claim (k1 = 1.2, b = 0.75; Robertson and Zaragoza, 2009). Words are lower-cased, stripped of accents and cut to their first 7 letters: a language-independent stand-in for stemming (McNamee et al., 2009), which found more evidence than 5, 6 or whole words. A sentence also gets 30 % of its better neighbour's score.
+- **Translation:** BM25 needs the claim in the document's language, so Apertus first translates a claim in another language. This is translate-test (Conneau et al., 2018; Artetxe et al., 2023), with the model translating for itself (self-translate; Etxaniz et al., 2024).
 
 ### 2.2 Beginner task: a scoped reference
 
-**1. Translate** a claim in another language into the reference's language (Section 2.1). The prompt shows the claim, then `THE CLAIM IN FRENCH (a translation, to compare it with the reference):` and the translation.
+**Figure 1: Beginner task**
 
-**2. Scope the reference.** References are whole booklet sections: 3,700 characters in the median, 7,100 on average, up to 25,000, and most of the input. For the 1,225 references longer than 2,000 characters, we keep the 6 sentences that match the claim best (Section 2.1, with the translated claim) and the sentence before and after each. They stay in the reference's order, about 2,000 characters in all, with "[…]" for each gap.
+![The beginner task: translate the claim, scope the reference, decide](docs/architecture_beginner.svg)
 
-**3. Decide.** The label definitions put neutral first and allow contradiction only with a sentence to quote, after the idea of supporting answers with verified quotes (Menick et al., 2022):
+1. **Translate** a claim in another language into the reference's language.
+2. **Scope** a reference over 2,000 characters, as 1,225 of the 1,488 are: the 6 sentences that match the claim best, each with the sentence before and after it, in the reference's order and with "[…]" for each gap. That is about 2,000 characters.
+3. **Decide:** Apertus explains in at most three sentences what the reference says about the claim, then writes `Label: <word>` (the prompt is in Section 3).
 
-> - **neutral:** the reference neither supports nor contradicts the claim
-> - **contradiction:** the reference says the opposite of the claim, and you can quote the sentence that does
-> - **entailment:** the reference supports the claim
->
-> If the reference does not mention what the claim says, or is about another topic, the label is "neutral", not "contradiction": a claim the reference does not support is not contradicted by it.
-
-The model first explains in at most three sentences what the reference says about the claim. Then it writes `Label: <word>` on a last line, which is the line we read. Reasoning before the answer helps (Wei et al., 2022), and an explanation written after the label cannot change it.
-
-**Why these steps.** Almost all of the baseline's errors were neutral claims answered contradiction: 274 of 498. The dataset's neutral claims mostly add a detail the reference does not give. We added one step at a time:
-
-1. **Neutral first, with reasoning:** 140 such errors were left. In 86 of them, the model's own explanation said the reference "does not mention" the claim before it answered contradiction.
-2. **The `quote` definitions,** which call that neutral: 46 were left.
-3. **Scoping** fixed 44 of the 52 errors left after the translation step, 39 of them neutral claims answered contradiction. It made 12 new ones, 5 of them contradictions whose deciding sentence was cut away.
-
-This matches the finding that irrelevant context distracts language models (Shi et al., 2023).
+The evidence is the reference shown, with page `null`, and none for a neutral answer.
 
 ### 2.3 Advanced task: retrieve, then verify
 
-**1. Read the booklet** once, when a case first needs it. 59 of the 60 booklets are tagged PDFs (ISO 32000-2 §14.8; PDF/UA, ISO 14289-1). Their structure tree gives the headings, the paragraphs and the reading order, without running headers and page numbers. PDFium reads the text of each tagged element. The voting text is placed untagged, so a page with much untagged text takes its body text from the text layer. Of three readers, the tags kept the most of each gold passage: 97.9 % on average at 3 ms per page. The plain text layer kept 96.0 % at 1 ms per page, and Docling (Auer et al., 2024) 95.9 % at 157 ms per page on a CPU.
+**Figure 2: Advanced task**
 
-**2. Index the sentences** of the body text (Section 2.1). Each sentence also keeps its page and the two headings above it.
+![The advanced task: read and index the booklet once, then narrow to the claim's vote, search, build the excerpts, decide and return the evidence](docs/architecture_advanced.svg)
 
-**3. Narrow to the claim's vote.** A booklet covers one to five votes, and each case names its vote. Running headers such as "Erste Vorlage: …" or "Deuxième objet : …" assign the pages of the booklet's detailed part to the votes. We keep the vote whose pages share the most rare words and word pairs with the case's vote title. These pages are a third of a booklet on average, and they hold all gold pages in 989 of the 990 cases with a gold entailment or contradiction. Claims about the voting text or the summary read alike for every vote, so they had often been judged against another vote's text.
+1. **Read the booklet** once, when a case first needs it, from its PDF tags (ISO 32000-2 §14.8; PDF/UA, ISO 14289-1), which 59 of the 60 booklets have. They give the headings, the paragraphs and the reading order, without running headers and page numbers. The voting text is untagged, so a page with much untagged text takes its body text from the text layer.
+2. **Index its sentences,** each with its page and the two headings above it.
+3. **Narrow to the claim's vote.** Running headers such as "Erste Vorlage: …" assign the pages of the booklet's detailed part to its votes, and we keep the vote whose pages share the most rare words and word pairs with the case's vote title. That is a third of a booklet on average, with all gold pages in 989 of the 990 cases with a gold entailment or contradiction.
+4. **Search** these pages with the claim, or with its translation if it is in another language.
+5. **Build the excerpts:** the 8 best sentences, best first, each with the sentence before and after it on its page, about 2,000 characters in all. Each excerpt names its page and section, for example `[3] (p. 12, Argumente › Zu strikte Vorgaben) …`.
+6. **Decide** as in the beginner task, then name the excerpts that decide it: `Excerpts: <numbers>`.
+7. **Return the evidence:** five verbatim sentences with their 1-based pages. First those found that are also in a cited excerpt, then the other sentences found, then the rest of the cited excerpts. The vote's title, which starts every gold passage, and fragments under 40 characters are never returned. A neutral answer gets evidence too, since the challenge scores the evidence of every case whose gold label is entailment or contradiction.
 
-**4. Search the supplied booklet.** A claim in the booklet's language is searched as it is, and a claim in another language with its translation (Section 2.1), within the pages of the claim's vote. We read only the booklet the case supplies. Every booklet is also published in the other two languages with the same pages, and searching the edition in the claim's language as well raised macro-F1 to 0.962 in our runs (Table 3). But that edition is in the input folder only when another case uses it, and the challenge asks to judge against the supplied source, so we left it out.
+### 2.4 Why this design
 
-**5. Build the excerpts.** The 8 best sentences become numbered excerpts, best first, each with the sentence before and after it on its page, up to about 2,000 characters in all. Each excerpt names its page and section, for example `[3] (p. 12, Argumente › Zu strikte Vorgaben) …`. That is a few percent of a booklet, which has 23,000 to 270,000 characters. Long and distracting contexts lower accuracy (Liu et al., 2024; Shi et al., 2023), and retrieval with a short context can match long-context models (Xu et al., 2024).
-
-**6. Decide as in the beginner task** (Section 2.2). Apertus gets the vote, the excerpts, the claim and its translation, and the `quote` definitions, with "booklet" in place of "reference". It first explains in at most three sentences what the excerpts say about the claim, quoting the sentence that says the opposite for a contradiction. Then it writes `Label: <word>` and, on a last line, `Excerpts: <numbers>`, the excerpts that decide it. Only these two lines are read, since the reasoning may name other labels and numbers. The prompt also says that only the booklet counts, not the model's own knowledge.
-
-We first asked for JSON only, `{"label": …, "excerpts": [numbers]}`, with a definition of neutral that covered a claim with a detail the booklet does not give, such as a number or a date. That answered 42 contradictions neutral, often with the opposite in the excerpts. The token limit was not the cause: given 250 tokens instead of 40, the model answered neutral in all 42 again, since it wrote the label first and any explanation after it. Deciding as in the beginner task cut them to 4 (Table 3).
-
-**7. Return the evidence:** five sentences of the booklet, verbatim in its language, with their 1-based pages. They come in this order:
-
-1. The sentences found that are also in an excerpt the model cited.
-2. The other sentences found, best first.
-3. The rest of the cited excerpts.
-
-The vote's title, which starts every gold passage, and fragments under 40 characters are never returned. A neutral answer gets evidence too, since the challenge scores the evidence of every case whose gold label is entailment or contradiction.
+| Choice                                                     | Why                                                                                                                                                                                                                                                                  |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| About 2,000 characters of context                          | A reference has 3,700 characters in the median and up to 25,000, a booklet 23,000 to 270,000. Long and distracting contexts lower accuracy (Liu et al., 2024; Shi et al., 2023), and retrieval with a short context can match long-context models (Xu et al., 2024). |
+| Only the pages of the claim's vote                         | Claims about the voting text or the summary read alike for every vote, so they had often been judged against another vote's text.                                                                                                                                    |
+| The PDF tags                                               | They kept the most of each gold passage: 97.9 % on average, at 3 ms per page. The text layer kept 96.0 % at 1 ms, and Docling (Auer et al., 2024) 95.9 % at 157 ms per page on a CPU.                                                                                |
+| Only the supplied booklet                                  | The challenge asks to judge against the supplied source. Searching the booklet's edition in the claim's language as well raised macro-F1 to 0.962 (Table 3), but that edition is in the input folder only when another case uses it.                                 |
+| Neutral first, contradiction only with a sentence to quote | Most of the baseline's errors were neutral claims answered contradiction (Section 5). The quote follows the idea of supporting answers with verified quotes (Menick et al., 2022).                                                                                   |
+| Reasoning before the label                                 | Reasoning before the answer helps (Wei et al., 2022), and an explanation written after the label cannot change it.                                                                                                                                                   |
 
 ## 3. Use of Apertus
 
@@ -93,6 +76,13 @@ The vote's title, which starts every gold passage, and fragments under 40 charac
   - **Translation** of a cross-lingual claim, at most 200 output tokens.
   - **The decision:** in both tasks at most three sentences of reasoning, then the label: at most 200 output tokens in the beginner task, and 250 in the advanced task, whose answer also names the excerpts.
 - **Where:** a hosted endpoint, called through the OpenAI-compatible chat API at `BASE_URL`: the CSCS Inference API during development, the organisers' proxy at the evaluation. 8 requests run in parallel.
+- **The decision's prompt** gives the label definitions below, neutral first, and the claim with its translation under it. In the advanced task it says "booklet" in place of "reference", gives the vote and the numbered excerpts, and says that only the booklet counts, not the model's own knowledge. Only the last `Label:` line of the answer is read, and in the advanced task the last `Excerpts:` line, since the reasoning may name other labels and numbers.
+
+  > - **neutral:** the reference neither supports nor contradicts the claim
+  > - **contradiction:** the reference says the opposite of the claim, and you can quote the sentence that does
+  > - **entailment:** the reference supports the claim
+  >
+  > If the reference does not mention what the claim says, or is about another topic, the label is "neutral", not "contradiction": a claim the reference does not support is not contradicted by it.
 
 ## 4. Data
 
@@ -137,31 +127,34 @@ Across the nine pairs of document and claim language, macro-F1 ranges from 0.973
 
 **Table 3: What each step added** (all 1,488 cases unless noted)
 
-| Task     | Step                                                                                                | Macro-F1  | Hit@5 | Input tokens per case |
-| -------- | --------------------------------------------------------------------------------------------------- | --------- | ----- | --------------------- |
-| Beginner | Baseline prompt                                                                                     | 0.788     | –     | 1,897                 |
-| Beginner | Neutral first, reasoning before the label                                                           | 0.901     | –     | 1,952                 |
-| Beginner | `quote` definitions, reasoning before the label                                                     | 0.962     | –     | 1,984                 |
-| Beginner | + the translation of a cross-lingual claim                                                          | 0.965     | –     | 2,092                 |
-| Beginner | + only the sentences around the claim (the solution)                                                | 0.987     | –     | 748                   |
-| Advanced | Full-document prompting (150 cases)                                                                 | 0.70–0.73 | 0.13  | 34,762                |
-| Advanced | Only the vote's pages; the model quotes sentences, which are looked up in the PDF                   | 0.850     | 0.485 | 11,553                |
-| Advanced | Retrieve, then verify: tags, BM25, the edition in the claim's language, a narrow contradiction      | 0.927     | 0.957 | 960                   |
-| Advanced | + the search with the translated claim, excerpts of both editions                                   | 0.953     | 0.987 | 1,471                 |
-| Advanced | + only the pages of the claim's vote                                                                | 0.962     | 0.988 | 1,481                 |
-| Advanced | Only the supplied booklet: the translated claim alone, shown to the model                           | 0.951     | 0.978 | 1,077                 |
-| Advanced | + deciding as in the beginner task, reasoning first (the solution)                                  | 0.974     | 0.979 | 1,053                 |
+| Task     | Step                                                                                           | Macro-F1  | Hit@5 | Input tokens per case |
+| -------- | ---------------------------------------------------------------------------------------------- | --------- | ----- | --------------------- |
+| Beginner | Baseline prompt                                                                                | 0.788     | –     | 1,897                 |
+| Beginner | Neutral first, reasoning before the label                                                      | 0.901     | –     | 1,952                 |
+| Beginner | `quote` definitions, reasoning before the label                                                | 0.962     | –     | 1,984                 |
+| Beginner | + the translation of a cross-lingual claim                                                     | 0.965     | –     | 2,092                 |
+| Beginner | + only the sentences around the claim (the solution)                                           | 0.987     | –     | 748                   |
+| Advanced | Full-document prompting (150 cases)                                                            | 0.70–0.73 | 0.13  | 34,762                |
+| Advanced | Only the vote's pages; the model quotes sentences, which are looked up in the PDF              | 0.850     | 0.485 | 11,553                |
+| Advanced | Retrieve, then verify: tags, BM25, the edition in the claim's language, a narrow contradiction | 0.927     | 0.957 | 960                   |
+| Advanced | + the search with the translated claim, excerpts of both editions                              | 0.953     | 0.987 | 1,471                 |
+| Advanced | + only the pages of the claim's vote                                                           | 0.962     | 0.988 | 1,481                 |
+| Advanced | Only the supplied booklet: the translated claim alone, shown to the model                      | 0.951     | 0.978 | 1,077                 |
+| Advanced | + deciding as in the beginner task, reasoning first (the solution)                             | 0.974     | 0.979 | 1,053                 |
 
 The output adds about 86 tokens per case in the beginner task (the translation and the reasoning), and about 104 in the advanced task (the translation and the reasoning).
+
+**What the steps fixed:**
+
+- **Beginner task:** 274 of the baseline's 498 errors were neutral claims answered contradiction, mostly claims that add a detail the reference does not give. Neutral first, with reasoning, left 140 of them; in 86 of these, the model's own explanation said the reference "does not mention" the claim. The `quote` definitions left 46. Scoping fixed 44 of the 52 errors left after the translation step, 39 of them neutral claims answered contradiction, as irrelevant context distracts language models (Shi et al., 2023). It made 12 new ones, 5 of them contradictions whose deciding sentence was cut away.
+- **Advanced task:** an answer in JSON only, label first, with a neutral that covered a claim with a detail the booklet does not give, answered 42 contradictions neutral, often with the opposite in the excerpts. Given 250 tokens instead of 40, it answered neutral in all 42 again. Deciding as in the beginner task left 4.
 
 **Tried and left out:**
 
 - **Paraphrases:** five paraphrases of the claim, searched alongside it (after Hoyle et al., 2023). In the beginner task they reached 0.979, for 2,513 tokens per case. In the advanced task they reached 0.947 on top of the translation, against 0.951 without, for 25 % more tokens; the rankings were merged by reciprocal rank fusion (Cormack et al., 2009).
-- **The booklet's edition in the claim's language** (advanced task): searching it as well, with each sentence found there mapped to the sentence at the same relative position on the same page of the booklet, a positional variant of length-based sentence alignment (Gale and Church, 1993), raised macro-F1 to 0.962 and Hit@5 to 0.988. It is left out for the reason given in Section 2.3.
+- **The booklet's edition in the claim's language** (advanced task): searching it as well, with each sentence found there mapped to the sentence at the same relative position on the same page of the booklet, a positional variant of length-based sentence alignment (Gale and Church, 1993), raised macro-F1 to 0.962 and Hit@5 to 0.988. It is left out for the reason given in Section 2.4.
 - **Shorter excerpts in the beginner task:** 1,500 characters gave 0.984, and 1,000 characters 0.977, for 800 and 729 tokens per case.
-- **More excerpts after a neutral answer** (advanced task, 150 cases): this fixed 2 misses but turned 3 correct neutral answers into contradictions, for 80 % more input tokens.
 - **Four extra lines in the advanced prompt,** one for each of its main errors (who says what; arguments against a proposal do not contradict what it would do; compare every number; "not mentioned" is neutral): macro-F1 0.973 instead of 0.974, for 11 % more tokens. They fixed 15 errors and made 17 new ones, mostly neutral claims about another topic answered contradiction although the reasoning said the booklet does not mention them.
-- **Three extra rules in the advanced prompt** (with the other edition): macro-F1 0.960 instead of 0.962. They traded contradictions answered neutral for neutrals answered contradiction.
 
 **Tokens and time.** Narrowing the context cut the tokens per case 2.3-fold in the beginner task and 30-fold in the advanced task, while it raised macro-F1. The processing time leaves out Apertus' latency, which was 1.5 s per case in the beginner task and 1.9 s in the advanced task. That leaves 0.9 s per run of all 1,488 cases in the beginner task, and 5.4 s in the advanced task:
 
@@ -197,26 +190,26 @@ Creative Commons Attribution 4.0 (CC-BY-4.0). All HackApertus projects are open-
 
 ## References
 
-- Artetxe, M., Goswami, V., Bhosale, S., Fan, A., Zettlemoyer, L. (2023). Revisiting Machine Translation for Cross-lingual Classification. _EMNLP 2023_.
+- Artetxe, M., et al. (2023). Revisiting Machine Translation for Cross-lingual Classification. _EMNLP 2023_.
 - Auer, C., et al. (2024). Docling Technical Report. _arXiv:2408.09869_.
 - Chen, T., et al. (2024). Dense X Retrieval: What Retrieval Granularity Should We Use? _EMNLP 2024_.
-- Conneau, A., Rinott, R., Lample, G., Williams, A., Bowman, S. R., Schwenk, H., Stoyanov, V. (2018). XNLI: Evaluating Cross-lingual Sentence Representations. _EMNLP 2018_.
+- Conneau, A., et al. (2018). XNLI: Evaluating Cross-lingual Sentence Representations. _EMNLP 2018_.
 - Cormack, G. V., Clarke, C. L. A., Büttcher, S. (2009). Reciprocal Rank Fusion Outperforms Condorcet and Individual Rank Learning Methods. _SIGIR 2009_.
 - Dagan, I., Glickman, O., Magnini, B. (2006). The PASCAL Recognising Textual Entailment Challenge. _Machine Learning Challenges, LNCS 3944_.
-- Egli, E., Mamié, N., Müller, M., Dolev, E. L. (2023). Voting Booklet Bias: Stance Detection in Swiss Federal Communication. _arXiv:2306.08999_.
-- Etxaniz, J., Azkune, G., Soroa, A., Lopez de Lacalle, O., Artetxe, M. (2024). Do Multilingual Language Models Think Better in English? _NAACL 2024_.
+- Egli, E., et al. (2023). Voting Booklet Bias: Stance Detection in Swiss Federal Communication. _arXiv:2306.08999_.
+- Etxaniz, J., et al. (2024). Do Multilingual Language Models Think Better in English? _NAACL 2024_.
 - Gale, W. A., Church, K. W. (1993). A Program for Aligning Sentences in Bilingual Corpora. _Computational Linguistics 19(1)_.
 - Guo, Z., Schlichtkrull, M., Vlachos, A. (2022). A Survey on Automated Fact-Checking. _TACL 10_.
-- Hoyle, A., Sarkar, R., Goel, P., Resnik, P. (2023). Natural Language Decompositions of Implicit Content Enable Better Text Representations. _EMNLP 2023_.
+- Hoyle, A., et al. (2023). Natural Language Decompositions of Implicit Content Enable Better Text Representations. _EMNLP 2023_.
 - ISO 32000-2:2020, Portable Document Format, Part 2: PDF 2.0 (§14.8, Tagged PDF); ISO 14289-1:2014, PDF/UA-1.
-- Liu, N. F., Lin, K., Hewitt, J., Paranjape, A., Bevilacqua, M., Petroni, F., Liang, P. (2024). Lost in the Middle: How Language Models Use Long Contexts. _TACL 12_.
+- Liu, N. F., et al. (2024). Lost in the Middle: How Language Models Use Long Contexts. _TACL 12_.
 - McNamee, P., Nicholas, C., Mayfield, J. (2009). Addressing Morphological Variation in Alphabetic Languages. _SIGIR 2009_.
 - Menick, J., et al. (2022). Teaching Language Models to Support Answers with Verified Quotes. _arXiv:2203.11147_.
 - OST (2026). MNLIoverSwissVotingBooklets, v1.1. _huggingface.co/datasets/OSTswiss/MNLIoverSwissVotingBooklets_.
 - Project Apertus (2025). Apertus: Democratizing Open and Compliant LLMs for Global Language Environments. _arXiv:2509.14233_.
 - Robertson, S., Zaragoza, H. (2009). The Probabilistic Relevance Framework: BM25 and Beyond. _Foundations and Trends in Information Retrieval 3(4)_.
-- Shi, F., Chen, X., Misra, K., Scales, N., Dohan, D., Chi, E., Schärli, N., Zhou, D. (2023). Large Language Models Can Be Easily Distracted by Irrelevant Context. _ICML 2023_.
-- Thorne, J., Vlachos, A., Christodoulopoulos, C., Mittal, A. (2018). FEVER: a Large-scale Dataset for Fact Extraction and VERification. _NAACL 2018_.
+- Shi, F., et al. (2023). Large Language Models Can Be Easily Distracted by Irrelevant Context. _ICML 2023_.
+- Thorne, J., et al. (2018). FEVER: a Large-scale Dataset for Fact Extraction and VERification. _NAACL 2018_.
 - Wei, J., et al. (2022). Chain-of-Thought Prompting Elicits Reasoning in Large Language Models. _NeurIPS 2022_.
 - Williams, A., Nangia, N., Bowman, S. R. (2018). A Broad-Coverage Challenge Corpus for Sentence Understanding through Inference. _NAACL 2018_.
 - Xu, P., et al. (2024). Retrieval meets Long Context Large Language Models. _ICLR 2024_.

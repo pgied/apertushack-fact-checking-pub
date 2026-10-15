@@ -245,3 +245,6 @@ output/
 slurm/logs/*
 !slurm/logs/.gitkeep
 slurm-*.out
+
+# What pdflatex leaves next to the diagrams in docs/ (its .log is ignored above)
+docs/*.aux
