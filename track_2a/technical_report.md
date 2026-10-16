@@ -2,13 +2,13 @@
 
 - **Track:** Track 2A — OST: Multilingual Natural Language Inference over Swiss Official Voting Booklets
 - **Event:** Online
-- **Team:** FactCheckers — Patrick Giedemann, Fatma-Zohra Rezkellah, Sophia Conrad
+- **Team:** FactCheckers — Fatma-Zohra Rezkellah, Sophia Conrad, Patrick Giedemann
 - **Demo:** the Docker image `ghcr.io/pgied/apertushack-fact-checking-pub:latest` (no demo video required)
 - **Code:** the beginner task is [`gied_beginner_scoped`](src/strategies/gied_beginner_scoped/strategy.py), the advanced task is [`gied_strict_reasoned`](src/strategies/gied_strict_reasoned/strategy.py); the shared retrieval code is in [`src/strategies/_gied/`](src/strategies/_gied/).
 
 ## 1. Summary
 
-Every Swiss popular vote comes with an official booklet in German, French and Italian. The task is to decide whether the booklet supports a claim about the vote (entailment), contradicts it, or neither (neutral). Two thirds of the claims are in another language than the booklet. The beginner task gives a section of the booklet, the advanced task the whole PDF, and asks for the evidence too. Both our solutions retrieve, then verify (Thorne et al., 2018). Our code finds the few sentences that bear on the claim, and Apertus v1.5 70B judges only those. On all 1,488 public cases, we reach a macro-F1 of 0.987 in the beginner task (baseline 0.788), with 834 tokens and 0.6 ms of processing time per case. In the advanced task we reach 0.974, with an evidence Hit@5 of 0.979, 1,157 tokens and 3.6 ms per case. Prompting with the whole booklet reached 0.70–0.73, for about 34,770 tokens per case.
+Every Swiss popular vote comes with an official booklet in German, French and Italian (and Romansh, not included in this study). The task is to decide whether the booklet supports a claim about the vote (entailment), contradicts it, or neither (neutral). Two thirds of the claims are in another language than the booklet. The beginner task gives a section of the booklet, the advanced task the whole PDF, and asks for the evidence too. Both our solutions retrieve, then verify (Thorne et al., 2018). Our code finds the few sentences that bear on the claim, and `Apertus-v1.5-70B` judges only those. On all 1,488 public cases, we reach a macro-F1 of 0.987 in the beginner task (baseline 0.788), with 834 tokens and 0.6 ms of processing time per case. In the advanced task we reach 0.974, with an evidence Hit@5 of 0.979, 1,157 tokens and 3.6 ms per case. Prompting with the whole booklet reached 0.70–0.73, for about 34,770 tokens per case.
 
 ## 2. Architecture
 
@@ -19,13 +19,13 @@ Every Swiss popular vote comes with an official booklet in German, French and It
 | BM25, our own Python code                         | Finds the sentences that bear on the claim                          | Our Docker image                        |
 | Apertus v1.5 70B                                  | Translates a claim in another language, and decides the label       | A hosted endpoint, at `BASE_URL`        |
 
-There is no OCR, no embedding model and no other model. A case sends one request to Apertus, or two if the claim is in another language than the document, a translation, then the decision. In Figures 1 and 2, the numbers are the steps of Sections 2.2 and 2.3, and a dashed box is a step that only some cases take.
+There is no OCR, no embedding model and no other model. A case sends one request to Apertus, or two if the claim is in another language than the document: a translation, then the decision. In Figures 1 and 2, the numbers are the steps of Sections 2.2 and 2.3, and a dashed box is a step that only some cases take.
 
 ### 2.1 Shared by both tasks: sentence search and translation
 
-- **Sentences** are the unit of search, since the evidence has to be short and verbatim. Units finer than passages fit more of the relevant text into a fixed number of tokens (Chen et al., 2024); that paper's finest unit, the proposition, is rewritten by a model and could not be quoted. A sentence never crosses a paragraph or a page, and one under 40 characters joins the next.
-- **BM25** (Robertson and Zaragoza, 2009; k1 = 1.2, b = 0.75) ranks the sentences for the claim. Words are lower-cased, stripped of accents and cut to their first 7 letters, a language-independent stand-in for stemming (McNamee et al., 2009). A sentence also gets 30 % of its better neighbour's score.
-- **Translation:** BM25 needs the claim in the document's language, so Apertus first translates a claim in another language: translate-test (Conneau et al., 2018; Artetxe et al., 2023), with the model translating for itself (Etxaniz et al., 2024).
+- **Sentences** are the unit of search, since the evidence has to be short and verbatim. Chen et al. (2024) found, with dense retrievers, that sentences fit more of the relevant text into a fixed number of tokens than passages, and propositions more still. But propositions are rewritten by a model, so they could not be quoted. A sentence never crosses a paragraph or a page, an abbreviation such as "z. B." does not end it, and one under 40 characters joins the next.
+- **BM25** ranks the sentences for the claim (k1 = 1.2, b = 0.75; Robertson and Zaragoza, 2009). Words are lower-cased, stripped of accents and cut to their first 7 letters. This is a language-independent stand-in for stemming (McNamee et al., 2009), which found more evidence than 5, 6 or whole words. A sentence also gets 30 % of its better neighbour's score.
+- **Translation:** BM25 needs the claim in the document's language, so Apertus first translates a claim in another language. This is translate-test (Conneau et al., 2018; Artetxe et al., 2023), with the model translating for itself (self-translate; Etxaniz et al., 2024).
 
 ### 2.2 Beginner task: a scoped reference
 
@@ -33,11 +33,11 @@ There is no OCR, no embedding model and no other model. A case sends one request
 
 ![The beginner task: translate the claim, scope the reference, decide](docs/architecture_beginner.svg)
 
-1. **Translate** a claim in another language into the reference's language.
+1. **Translate** a claim into the reference's language if it is not the same.
 2. **Scope** a reference over 2,000 characters, as 1,225 of the 1,488 are: the 6 sentences that match the claim best, each with the sentence before and after it, in order, with "[…]" for each gap.
 3. **Decide:** Apertus explains in at most three sentences what the reference says about the claim, then writes `Label: <word>` (Section 3).
 
-The evidence is the reference shown, with page `null`, and none for a neutral answer.
+The evidence is the reference shown, with page `null`; a neutral answer gets none.
 
 ### 2.3 Advanced task: retrieve, then verify
 
@@ -52,8 +52,6 @@ The evidence is the reference shown, with page `null`, and none for a neutral an
 5. **Build the excerpts:** the 8 best sentences, each with its neighbours on the page, about 2,000 characters, numbered and labelled with page and section, e.g. `[3] (p. 12, Argumente › Zu strikte Vorgaben)`.
 6. **Decide** as in the beginner task, and name the deciding excerpts: `Excerpts: <numbers>`.
 7. **Return the evidence:** five verbatim sentences with their pages, those of the cited excerpts first, but never the vote's title, which starts every gold passage. A neutral answer gets evidence too, since the evidence of every gold entailment or contradiction is scored.
-
-### 2.4 Why this design
 
 | Choice                                                     | Why                                                                                                                                                                                                                                         |
 | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -90,54 +88,57 @@ We report the challenge's metrics on all 1,488 public cases: macro-F1; evidence 
 | Task     | System                                                                   | Macro-F1 ↑    | Hit@5 ↑   | Tokens per case (in + out) ↓ | Time ↓ |
 | -------- | ------------------------------------------------------------------------ | ------------- | --------- | ---------------------------- | ------ |
 | Beginner | Baseline: the whole reference, a one-word answer                         | 0.788         | –         | 1,897 + ≤ 10                 | –      |
-| Beginner | **Ours**                                                                 | **0.987**     | –         | 748 + 86                     | 0.6 ms |
+| Beginner | **Our submitted model**                                                  | **0.987**     | –         | 748 + 86                     | 0.6 ms |
 | Advanced | Baseline: full-document prompting, the whole booklet (150 cases, 2 runs) | 0.701 / 0.727 | 0.128     | 34,762 + ≤ 10                | –      |
 | Advanced | Ours, on the same 150 cases                                              | 0.978         | 1.000     | 1,048 + 102                  | –      |
-| Advanced | **Ours**                                                                 | **0.974**     | **0.979** | 1,053 + 104                  | 3.6 ms |
+| Advanced | **Our submitted model**                                                  | **0.974**     | **0.979** | 1,053 + 104                  | 3.6 ms |
 
 **Table 2: What each step added** (all 1,488 cases, unless noted)
 
-| Task     | Step                                                                                         | Macro-F1 ↑ | Hit@5 ↑ | Input tokens per case ↓ |
-| -------- | -------------------------------------------------------------------------------------------- | ---------- | ------- | ----------------------- |
-| Beginner | Baseline prompt                                                                              | 0.788      | –       | 1,897                   |
-| Beginner | Neutral first, reasoning before the label                                                    | 0.901      | –       | 1,952                   |
-| Beginner | `quote` definitions                                                                          | 0.962      | –       | 1,984                   |
-| Beginner | + the translation of a cross-lingual claim                                                   | 0.965      | –       | 2,092                   |
-| Beginner | + only the sentences around the claim (ours)                                                 | 0.987      | –       | 748                     |
-| Advanced | Full-document prompting (150 cases)                                                          | 0.70–0.73  | 0.13    | 34,762                  |
-| Advanced | Only the vote's pages; the model's quotes are looked up in the PDF                           | 0.850      | 0.485   | 11,553                  |
-| Advanced | Retrieve, then verify: BM25 over the vote's pages with the translated claim, the label first | 0.951      | 0.978   | 1,077                   |
-| Advanced | + reasoning before the label (ours)                                                          | 0.974      | 0.979   | 1,053                   |
+| Task     | Step                                                                                         | Macro-F1 ↑ | Hit@5 ↑   | Input tokens per case ↓ |
+| -------- | -------------------------------------------------------------------------------------------- | ---------- | --------- | ----------------------- |
+| Beginner | Baseline prompt                                                                              | 0.788      | –         | 1,897                   |
+| Beginner | Neutral first, reasoning before the label                                                    | 0.901      | –         | 1,952                   |
+| Beginner | `quote` definitions                                                                          | 0.962      | –         | 1,984                   |
+| Beginner | + the translation of a cross-lingual claim                                                   | 0.965      | –         | 2,092                   |
+| Beginner | **+ only the sentences around the claim (ours)**                                             | **0.987**  | –         | **748**                 |
+| Advanced | Full-document prompting (150 cases)                                                          | 0.70–0.73  | 0.13      | 34,762                  |
+| Advanced | Only the vote's pages; the model's quotes are looked up in the PDF                           | 0.850      | 0.485     | 11,553                  |
+| Advanced | Retrieve, then verify: BM25 over the vote's pages with the translated claim, the label first | 0.951      | 0.978     | 1,077                   |
+| Advanced | **+ reasoning before the label (ours)**                                                      | **0.974**  | **0.979** | **1,053**               |
 
-**Languages.** Cross-lingual cases do as well as same-language ones: macro-F1 0.985 against 0.990 in the beginner task, and 0.982 against 0.958 in the advanced task. By the language of the claim or of the document, macro-F1 stays between 0.980 and 0.990 (beginner) and between 0.963 and 0.987 (advanced); the weakest pair is German claims on German booklets, 0.923 in the advanced task.
+**Languages.** Cross-lingual cases do as well as same-language ones: macro-F1 0.985 against 0.990 in the beginner task, and 0.982 against 0.958 in the advanced task. By the language of the claim or of the document, macro-F1 stays between 0.980 and 0.990 (beginner) and between 0.963 and 0.987 (advanced). The weakest pair is German claims on German booklets, 0.923 in the advanced task.
 
-**What made the difference** was the line between neutral and contradiction. In the beginner task, 274 of the baseline's 498 errors were neutral claims answered contradiction; putting neutral first with reasoning cut them to 140, and the `quote` definitions to 46. Scoping fixed 44 of the 52 errors left, since irrelevant context distracts language models (Shi et al., 2023), and made 12 new ones. In the advanced task, answering with the label first missed 42 contradictions, also with 250 tokens instead of 40; reasoning first left 4.
+**What made the difference** was the line between neutral and contradiction. In the beginner task, 274 of the baseline's 498 errors were neutral claims answered contradiction; putting neutral first with reasoning cut them to 140, and the `quote` definitions to 46. Scoping fixed 44 of the 52 errors left, since irrelevant context distracts language models (Shi et al., 2023), and made 12 new ones. In the advanced task, answering with the label first missed 42 contradictions, also with 250 tokens instead of 40. Reasoning first left 4.
 
 **Tried and left out:**
 
-- **Paraphrases** of the claim in the search (Hoyle et al., 2023), merged by reciprocal rank fusion (Cormack et al., 2009): 0.979 in the beginner task, and 0.947 instead of 0.951 in the advanced task, for three times and 1.25 times the tokens.
-- **Also searching the booklet's edition in the claim's language,** each sentence found mapped to the same position on the same page (Gale and Church, 1993): 0.962 instead of 0.951, left out for the reason in Section 2.4.
+- **Verified quotes,** our first advanced approach: Apertus got only the vote's pages and answered in JSON with the label and up to three sentences copied from the booklet, which we looked up in the PDF, exactly or as the closest passage, to give the evidence with its real page, after answers backed by verified quotes (Menick et al., 2022). It reached 0.850 and a Hit@5 of 0.485, for 11,553 input tokens per case. Asking for quotes on neutral answers too raised Hit@5 to 0.642 but lowered macro-F1 to 0.836. Retrieving the sentences ourselves cut the tokens about tenfold and makes the evidence verbatim by construction.
+- **Paraphrases** of the claim in the search (Hoyle et al., 2023), merged by reciprocal rank fusion (Cormack et al., 2009): 0.979 in the beginner task, and 0.947 instead of 0.951 in the advanced task, for three times and 1.25 times the tokens. They turned more neutral claims into contradictions, mostly claims about another vote whose explanation said the booklet does not mention them. Reading such answers as neutral removed nearly all of these, but also some true contradictions explained the same way ("the booklet does not mention five years, it says ten").
+- **Also searching the booklet's edition in the claim's language,** each sentence found mapped to the same position on the same page (Gale and Church, 1993): 0.962 instead of 0.951, left out for the reason in Section 2.3.
 - **Less context in the beginner task,** 1,500 or 1,000 characters: 0.984 and 0.977, for 800 and 729 tokens per case instead of 834.
-- **Four prompt rules** against the main advanced errors: 0.973, for 11 % more tokens; they fixed 15 errors and made 17 new ones.
+- **Four prompt rules** against the main advanced errors: 0.973, for 11 % more tokens. They fixed 15 errors and made 17 new ones.
 
-**Tokens and time.** Narrowing the context cut the tokens per case 2.3-fold in the beginner task and 30-fold in the advanced task, while it raised macro-F1. Without Apertus' latency (1.5 s and 1.9 s per case), a run of all 1,488 cases takes 0.9 s in the beginner task, all of it start-up, and 5.4 s in the advanced task, 4.6 s of it reading the booklets' text layers before the first request; their tags are read while requests are in flight.
+**Tokens and time.** Narrowing the context cut the tokens per case 2.3-fold in the beginner task and 30-fold in the advanced task, while it raised macro-F1. Without Apertus' latency (1.5 s and 1.9 s per case), a run of all 1,488 cases takes 0.9 s in the beginner task, all of it start-up, and 5.4 s in the advanced task, 4.6 s of it reading the booklets' text layers before the first request. Their tags are read while requests are in flight.
 
 ## 6. Limitations
 
+- **Prompt engineering only:** besides the paraphrases, we did not test more complex methods.
 - **Errors left:** most are wrong contradictions in the advanced task: 18 neutral claims, and 10 entailments, mostly same-language claims about what happens if the vote is accepted. In the beginner task, scoping cut away the deciding sentence of 5 contradictions.
-- **Booklet structure:** narrowing to the vote relies on running headers; a booklet without them is searched whole. The booklet without tags is read without subheadings; 14 of its 17 cases are right, and the 3 wrong are one repeated claim.
+- **Booklet structure:** narrowing to the vote relies on running headers. A booklet without them is searched whole. The booklet without tags is read without subheadings; 14 of its 17 cases are right, and the 3 wrong are one repeated claim.
 - **No OCR:** a scanned booklet would have neither tags nor a text layer.
-- **Time** is measured in-process on a laptop; the organisers time the whole container, including its start.
+- **Time** is measured in-process on a laptop. The organisers time the whole container, including its start.
+- **Task difficulty:** the task would be closer to reality if the correct booklet were not given but had to be found by Apertus itself. Since some voting questions come back over time, such as Switzerland joining the EU, this could make the task considerably harder.
 
 ## 7. Reproducibility
 
 - **Setup:** `uv sync` in `track_2a/`, then `uv run python -m src stage=prepare` for the dataset and the booklets. Dependencies (`uv.lock`) and the dataset revision are pinned.
 - **Runs:** `uv run python -m src strategy=gied_beginner_scoped model=apertus-70b` and `uv run python -m src task=advanced strategy=gied_strict_reasoned model=apertus-70b`, with their results in `data/runs/`.
-- **Submission:** `make run` builds the Docker image and decides the sample cases. It needs `API_KEY` (and `BASE_URL` for another endpoint), any CPU, no GPU and no model weights. Commit: `exact commit`.
+- **Submission:** `make run` builds the Docker image and decides the sample cases. It needs `API_KEY` (and `BASE_URL` for another endpoint), any CPU, no GPU and no model weights.
 
 ## 8. Next steps
 
-- **The search, more than the prompt.** With the source given, the task is largely one of prompt refinement: the label definitions and reasoning first alone raised beginner macro-F1 from 0.788 to 0.962 (Table 2). Fact verification proper starts by finding the source (Thorne et al., 2018): which of the 60 booklets, which edition and which vote. That is not trivial, since topics such as immigration or the relationship with the EU come back to the vote over the years.
+- **The search, more than the prompt.** With the source given, the task is largely one of prompt refinement. The label definitions and reasoning first alone raised beginner macro-F1 from 0.788 to 0.962 (Table 2). Fact verification proper starts by finding the source (Thorne et al., 2018): which of the 60 booklets, which edition and which vote. That is not trivial, since topics such as immigration or the relationship with the EU come back to the vote over the years.
 - **Above 0.9, the labels are open to interpretation.** On MNLI, the majority of five annotators matches the gold label in only about 92 % of the cases (Nangia and Bowman, 2019), and such disagreement is often genuine (Pavlick and Kwiatkowski, 2019). Our runs show it too: four extra prompt rules fixed 15 errors and made 17 new ones. Several people relabelling our errors would tell mistakes from disagreements.
 - **Smaller steps:** test the cheaper 8B model, and read each booklet's text layer only when a case first needs it.
 
